@@ -116,7 +116,13 @@
 #   carico che abbassa la frequenza. Se si ripete nello storico, e' un segnale.
 # - Prima di dare la colpa all'host guardare "Processi pesanti": altri lavori
 #   sulla macchina (trascrizioni, LLM locali, agenti, build) falsano la misura multi-core.
-# - Disco: ora calcolato da byte/secondi di dd (preciso), non piu' arrotondato.
+# - Disco: scrittura/lettura da byte/secondi di dd. 4k RANDOM (dal 2026-11-01 08:30):
+#   letture da 4 KB in punti casuali su tutto il file da 512 MB, O_DIRECT, una alla
+#   volta (queue depth 1) per 3 s: IOPS = latenza del disco. Prima c'era un dd 4k
+#   quasi sequenziale (sbagliato): quei valori stanno in disco_4k_GBs e non si confrontano.
+# - Versioni di openssl e python nel CSV: un aggiornamento cambia le misure CPU,
+#   quindi si confrontano solo test con le stesse versioni.
+# - Se una misura fallisce (valore vuoto) il test si ferma e NON scrive nello storico.
 # - Non misura RAM (overcommit) ne' rete (banda condivisa).
 # - OROLOGIO (aggiunto 2026-11-01, utile per incrociare lo storico con un controllo
 #   periodico degli orologi): colonne clocksource (kvm-clock/tsc), ntp_sync
@@ -135,7 +141,7 @@
 #   Con limite cgroup la scala e' calcolata sulle CPU concesse, non sulle vCPU.
 # - Riferimento 2026-11-01 notte (server di origine: 8 vCPU = 4 core x 2 thread, EPYC Milan):
 #   steal 0/0 %, CPU 1 core ~1.06 GB/s, 8 core 5.5-7.0 GB/s, giri 1.4-1.6 s,
-#   disco W 0.83-1.0 GB/s, R 3.4-5.3 GB/s, 4k 0.9-1.4 GB/s, durata ~37 s.
+#   disco (ext4, /): W ~0.55 GB/s, R ~0.55 GB/s. (I valori vecchi 1.0/4.5 GB/s erano /tmp = RAM.)
 # ---------------------------------------------------------------------------
 export LC_ALL=C
 # --- affinity: -c N (prime N vCPU) o -c lista (es. 0,2,4,6 / 0-3). Rilancia lo script sotto taskset.
@@ -153,17 +159,29 @@ if [ -n "$SCELTA" ] && [ -z "${MINIBENCH_AFFINITY:-}" ]; then
     (( SCELTA >= 1 && SCELTA <= TOT )) || { echo "-c $SCELTA: vCPU disponibili 1-$TOT"; exit 2; }
     LISTA="0-$((SCELTA-1))"
   else LISTA=$SCELTA; fi
-  MINIBENCH_AFFINITY="$LISTA" exec taskset -c "$LISTA" "$0" "${ORIG[@]}" || { echo "taskset -c $LISTA fallito"; exit 2; }
+  command -v taskset >/dev/null || { echo "-c: manca taskset (pacchetto util-linux)"; exit 2; }
+  # ogni vCPU della lista deve esistere (taskset da solo accetta 0-20 su 8 vCPU e tace)
+  python3 -I -c 'import sys
+s,tot=sys.argv[1],int(sys.argv[2]); v=set()
+for p in s.split(","):
+    a,_,b=p.partition("-"); v.update(range(int(a),int(b or a)+1))
+sys.exit(0 if v and max(v)<tot else 1)' "$LISTA" "$TOT" 2>/dev/null \
+    && taskset -c "$LISTA" true 2>/dev/null \
+    || { echo "-c $LISTA: lista vCPU non valida (vCPU disponibili 0-$((TOT-1)))"; exit 2; }
+  MINIBENCH_AFFINITY="$LISTA" exec taskset -c "$LISTA" "$0" "${ORIG[@]}"
 fi
-# --- blocco: un test alla volta (due insieme si falsano a vicenda)
-exec 9>/tmp/minibench.lock
-if ! flock -n 9; then echo "Un altro minibench sta girando: aspetto che finisca..." >&2; flock 9; fi
 # --- -t: tutto l'output dettagliato va via, alla fine si stampa solo il riassunto
 SINTESI=""
 if (( TG )); then exec 3>&1 1>/dev/null; SINTESI=$(mktemp /tmp/minibench-sintesi.XXXXXX); fi
 orologi(){ python3 -I -c 'import time;m=time.clock_gettime(time.CLOCK_MONOTONIC);r=time.clock_gettime(time.CLOCK_MONOTONIC_RAW);print(f"{m:.6f} {r-m:.6f}")'; }
 read -r MONO0 RAWD0 < <(orologi)   # inizio: MONOTONIC e (RAW - MONOTONIC)
 N=$(nproc); DIR=$(dirname "$(readlink -f "$0")"); LOG="${1:-${DIR%/}/minibench.csv}"
+# --- blocco: un test alla volta (due insieme si falsano a vicenda).
+# Lucchetto accanto allo storico (non in /tmp, dove chiunque potrebbe crearlo o tenerlo).
+# Se la cartella dello storico non e' scrivibile (agenti non root): lucchetto personale.
+LOCKDIR=$(dirname "$LOG"); [ -w "$LOCKDIR" ] || LOCKDIR=${XDG_RUNTIME_DIR:-$HOME}
+exec 9>"$LOCKDIR/.minibench.lock"
+if ! flock -n 9; then echo "Un altro minibench sta girando: aspetto che finisca..." >&2; flock 9; fi
 DISKDIR=${DISKDIR:-$DIR}
 [ -d "$DISKDIR" ] && [ -w "$DISKDIR" ] || { echo "-d $DISKDIR: cartella inesistente o non scrivibile" >&2; exit 2; }
 DISKFS=$(findmnt -n -o FSTYPE --target "$DISKDIR" 2>/dev/null || stat -f -c %T "$DISKDIR" 2>/dev/null || echo n/d)
@@ -172,6 +190,20 @@ LIBERO_MB=$(df -Pm "$DISKDIR" | awk 'NR==2{print $4}')
 stat_cpu(){ read -r _ u n s i w q sq st _ < <(grep '^cpu ' /proc/stat); echo "$((u+n+s+i+w+q+sq+st)) $st"; }
 pct(){ awk -v a="$1" -v b="$2" 'BEGIN{printf "%.2f",(b>0?100*a/b:0)}'; }
 dd_gbs(){ tail -1 | awk -F', ' '{split($1,b," "); split($3,s," "); printf "%.2f", b[1]/s[1]/1e9}'; }
+# 4k RANDOM vero: letture da 4 KB in posizioni casuali su TUTTO il file, O_DIRECT (niente cache),
+# una alla volta (queue depth 1 = misura la latenza del disco). Stampa le IOPS.
+rand4k(){ python3 -I - "$1" "$2" <<'R4K'
+import os, sys, mmap, random, time
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECT)
+blocchi = os.fstat(fd).st_size // 4096
+buf = mmap.mmap(-1, 4096)                 # buffer allineato, richiesto da O_DIRECT
+n = 0; t0 = time.monotonic(); fine = t0 + float(sys.argv[2])
+while True:
+    os.preadv(fd, [buf], random.randrange(blocchi) * 4096); n += 1
+    if n % 64 == 0 and time.monotonic() >= fine: break
+print(f"{n / (time.monotonic() - t0):.0f}")
+R4K
+}
 
 lsc(){ LC_ALL=C lscpu 2>/dev/null | awk -F: -v k="$1" '$1==k{sub(/^[ \t]+/,"",$2); print $2; exit}'; }
 MODELLO=$(lsc "Model name"); [ -n "$MODELLO" ] || MODELLO=$(awk -F: '/model name/{sub(/^ /,"",$2);print $2;exit}' /proc/cpuinfo)
@@ -196,6 +228,13 @@ echo "test su:      $N vCPU [$AFF] = $CORE core reali$( [ -n "${MINIBENCH_AFFINI
 echo "limite cgroup: $LIMITE$( [ "$LIMITE" != nessuno ] && echo ' CPU (container o servizio limitato: il multi-core non puo superarlo)')"
 echo "istruzioni:   ${FLAG:-nessuna rilevante}  hypervisor: $(systemd-detect-virt 2>/dev/null || echo n/d)"
 echo "RAM:          $(free -h | awk '/Mem/{print $2}')"
+CONT=$(systemd-detect-virt --container 2>/dev/null || true); CONT=${CONT:-none}
+OSSL=$(openssl version 2>/dev/null | awk '{print $2}'); PYV=$(python3 -I -c 'import platform;print(platform.python_version())')
+echo "strumenti:    openssl ${OSSL:-?}  python ${PYV:-?}  (se cambiano, lo storico riparte: vedi confronto)"
+if [ "$CONT" != none ] || [ "$LIMITE" != nessuno ]; then
+  echo "  NOTA STEAL: $( [ "$CONT" != none ] && echo "dentro un container ($CONT)" || echo "con limite cgroup") lo steal letto da /proc/stat"
+  echo "  e' quello di TUTTA la VM, non della tua quota: non attribuirlo al tuo processo."
+fi
 LOAD=$(cut -d' ' -f1 /proc/loadavg); echo "load attuale: $(cut -d' ' -f1-3 /proc/loadavg)"
 
 (( X > 1 )) && { echo; echo "== TEST LUNGO x$X: tempi, giri e passate disco moltiplicati per $X (~$((45 * X / 60)) min)"; }
@@ -238,12 +277,14 @@ mediana(){ tr ' ' '\n' | grep . | sort -n | awk '{v[NR]=$1} END{if(NR%2) print v
 F=$(mktemp "$DISKDIR/.minibench-disco.XXXXXX"); trap 'rm -f "$F"' EXIT
 LW=""; LR=""; L4=""
 for k in $(seq 1 $X); do
-  LW="$LW $(dd if=/dev/zero of=$F bs=1M count=512 oflag=direct conv=fsync 2>&1 | dd_gbs)"
-  LR="$LR $(dd if=$F of=/dev/null bs=1M iflag=direct 2>&1 | dd_gbs)"
-  L4="$L4 $(dd if=$F of=/dev/null bs=4k count=20000 iflag=direct skip=$((RANDOM%1000)) 2>&1 | dd_gbs)"
+  LW="$LW $(dd if=/dev/zero of="$F" bs=1M count=512 oflag=direct conv=fsync 2>&1 | dd_gbs)"
+  LR="$LR $(dd if="$F" of=/dev/null bs=1M iflag=direct 2>&1 | dd_gbs)"
+  L4="$L4 $(rand4k "$F" 3)"
 done
 DW=$(echo $LW | mediana); DR=$(echo $LR | mediana); D4=$(echo $L4 | mediana)
-echo "scrittura:            $DW GB/s"; echo "lettura:              $DR GB/s"; echo "lettura 4k:           $D4 GB/s"
+D4MB=$(awk -v i="$D4" 'BEGIN{printf "%.1f", i*4096/1e6}')
+echo "scrittura:            $DW GB/s"; echo "lettura:              $DR GB/s"
+echo "4k random:            $D4 IOPS  (= $D4MB MB/s; letture da 4 KB in punti casuali, una alla volta)"
 rm -f "$F"
 
 echo; echo "== Processi pesanti in questo momento"; ps -eo pcpu,rss,comm --sort=-pcpu | head -6
@@ -264,6 +305,10 @@ echo "    quarzo/hypervisor nudo. RAW - MONOTONIC = quanto NTP sta correggendo."
 echo "  Durata test e giri CPU: MONOTONIC (perf_counter). Data/ora nel CSV: UTC dal kernel."
 echo "  drift quasi 0 (< 0.001 s) = orologio stabile, misure attendibili."
 
+# --- misure valide? Se uno strumento fallisce, niente righe sporche nello storico
+for v in C1 CN GMIN GMAX DW DR D4 ST0 ST1 DUR; do
+  [[ "${!v}" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "ERRORE: misura $v non valida ('${!v}'): test interrotto, storico NON scritto" >&2; exit 3; }
+done
 V=$(awk -v a="$ST0" -v b="$ST1" 'BEGIN{m=(a>b?a:b); if(m<1) print "OK"; else if(m<5) print "ATTENZIONE"; else print "MALE"}')
 echo; echo "== VERDETTO STEAL"
 case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo "ATTENZIONE: host condiviso sotto carico (steal 1-5%)";; *) echo "MALE: VPS su host stracarico (steal > 5%)";; esac
@@ -272,7 +317,7 @@ case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo 
 python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
   "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
   "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" "$X" "$DISKFS" "$DISKDIR" \
-  "$NOLOG" "$SINTESI" <<'PY'
+  "$OSSL" "$PYV" "$CONT" "$NOLOG" "$SINTESI" <<'PY'
 import sys, os, csv
 log = sys.argv[1]
 COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
@@ -280,20 +325,24 @@ COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
         "giro_min_s","giro_max_s",
         "steal_riposo_pct","steal_carico_pct","durata_s","clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu",
         "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
-        "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir"]
+        "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir",
+        "disco_4k_iops","openssl_ver","python_ver","container"]
 # ordine degli argomenti passati da bash
 ARG = ["giorno_utc","ora_utc","offset_ita","verdetto","cpu1_GBs","cpu_tutti_GBs","giro_min_s","giro_max_s",
        "disco_scrittura_GBs","disco_lettura_GBs","disco_4k_GBs","steal_riposo_pct","steal_carico_pct","durata_s",
        "clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu",
        "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
-       "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir"]
+       "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir",
+       "openssl_ver","python_ver","container"]
 cur = dict(zip(ARG, sys.argv[2:2+len(ARG)]))
+# disco_4k: ora e' 4k RANDOM in IOPS (colonna nuova); la vecchia disco_4k_GBs (sequenziale, sbagliata) resta vuota
+cur["disco_4k_iops"] = cur.pop("disco_4k_GBs"); cur["disco_4k_GBs"] = ""
 NOLOG = sys.argv[2+len(ARG)] == "1"; SINTESI = sys.argv[3+len(ARG)]
 # raggruppate per unita': prima GB/s, poi secondi, poi %
 # gruppo, metrica, colonna, modo: 'alto' = piu' alto meglio, 'basso' = piu' basso meglio, 'steal'
 METRICHE = [("GB/s  (piu alto = meglio)","CPU 1 core","cpu1_GBs","alto"), (None,"CPU tutti i core","cpu_tutti_GBs","alto"),
             (None,"disco scrittura","disco_scrittura_GBs","alto"), (None,"disco lettura","disco_lettura_GBs","alto"),
-            (None,"disco 4k","disco_4k_GBs","alto"),
+            ("IOPS  (piu alto = meglio)","disco 4k random","disco_4k_iops","alto"),
             ("secondi  (piu basso = meglio)","giro CPU piu veloce","giro_min_s","basso"), (None,"giro CPU piu lento","giro_max_s","basso"),
             ("% steal  (piu basso = meglio)","steal a riposo","steal_riposo_pct","steal"), (None,"steal sotto carico","steal_carico_pct","steal")]
 def f(x):
@@ -320,9 +369,12 @@ stessa = [r for r in righe if r.get("vcpu") == cur["vcpu"] and r.get("cpu_modell
           and r.get("limite_cgroup", "nessuno") in ("", cur["limite_cgroup"])
           and r.get("affinity", "") in ("", cur["affinity"])
           and (r.get("x") or "1") == cur["x"]
-          and (r.get("disco_fs") or "tmpfs") == cur["disco_fs"]]
+          and (r.get("disco_fs") or "tmpfs") == cur["disco_fs"]
+          and r.get("openssl_ver", "") in ("", cur["openssl_ver"])
+          and r.get("python_ver", "") in ("", cur["python_ver"])
+          and bool(r.get("disco_4k_iops"))]   # righe col 4k vecchio (sequenziale) escluse
 if len(stessa) < len(righe):
-    print(f"\nNOTA: {len(righe)-len(stessa)} test dello storico fatti con CPU, vCPU, affinity, limite, -x o disco diversi: esclusi dal confronto")
+    print(f"\nNOTA: {len(righe)-len(stessa)} test dello storico non confrontabili (CPU, vCPU, affinity, limite, -x, disco, versioni openssl/python o 4k vecchio): esclusi")
 rif = stessa[-N_RIF:]
 def media(col):
     v = [x for x in (f(r.get(col)) for r in rif) if x is not None]
@@ -340,10 +392,11 @@ else:
         if gruppo: print(f"  -- {gruppo}")
         a, b = prev.get(col), f(cur[col]); i = indice(a, b, modo)
         if i is None: print(f"  {nome:22s}{'n/d':>12s}"); continue
-        vals.append(i); u = UNITA[modo]
+        vals.append(i); u = "IOPS" if col == "disco_4k_iops" else UNITA[modo]
         if col in ("cpu1_GBs", "cpu_tutti_GBs") and i <= SOGLIA_CPU:
             allarmi.append(f"{nome.upper()} AL {i:.0f} % DELLA MEDIA ({b:.2f} GB/s INVECE DI {a:.2f})")
-        print(f"  {nome:22s}{a:>7.2f} {u:<4s}  {b:>7.2f} {u:<4s}  {i:>7.1f} %  {esito(i)}")
+        dec = 0 if u == "IOPS" else 2
+        print(f"  {nome:22s}{a:>7.{dec}f} {u:<4s}  {b:>7.{dec}f} {u:<4s}  {i:>7.1f} %  {esito(i)}")
     a, b = prev.get("durata_s"), f(cur["durata_s"])
     if a and b: print(f"  -- non in media\n  {'durata test':22s}{a:>7.1f} {'s':<4s}  {b:>7.1f} {'s':<4s}")
     if vals:
@@ -372,7 +425,8 @@ if SINTESI:
          f"{cur['verdetto']} · steal {cur['steal_riposo_pct']}/{cur['steal_carico_pct']} %"
          + (f" · indice {ind} %" if ind else " · primo test"),
          f"CPU 1 core {cur['cpu1_GBs']} · tutti ({cur['vcpu']} vCPU) {cur['cpu_tutti_GBs']} GB/s · scala {cur['scala_pct']} %",
-         f"disco W {cur['disco_scrittura_GBs']} · R {cur['disco_lettura_GBs']} · 4k {cur['disco_4k_GBs']} GB/s [{cur['disco_fs']}]"]
+         f"disco W {cur['disco_scrittura_GBs']} · R {cur['disco_lettura_GBs']} GB/s · 4k random {cur['disco_4k_iops']} IOPS [{cur['disco_fs']}]"]
+    if cur["container"] != "none": s.append(f"⚠️ in container ({cur['container']}): steal = tutta la VM")
     if cur["disco_fs"] == "tmpfs": s.append("⚠️ disco misurato in RAM (tmpfs): usa -d")
     for a in allarmi: s.append("🚨 " + a)
     if not allarmi: s.append("✅ nessun allarme")

@@ -1,6 +1,6 @@
 # minibench
 
-Mini benchmark per VPS Linux in circa 37 secondi. Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
+Mini benchmark per VPS Linux in circa 45 secondi. Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
 
 > ⚠️ **DA AGGIUSTARE PER IL WEB**
 > Lo script è nato e tarato su **un server preciso**: VPS con 8 vCPU EPYC e Debian 13.
@@ -17,7 +17,7 @@ Mini benchmark per VPS Linux in circa 37 secondi. Misura se il provider ti sta t
 | `SINTESI.txt` | riassunto breve da mandare su WhatsApp o Telegram |
 | `LICENSE` | licenza MIT |
 | `.gitignore` | esclude lo storico locale `minibench.csv` |
-| `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026, 29 test: 28 col disco in RAM, 1 sul disco vero), come esempio di formato e di valori |
+| `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026: i primi col disco in RAM, poi disco vero; dalla riga con `disco_4k_iops` il 4k è random), come esempio di formato e di valori |
 
 ---
 
@@ -49,18 +49,18 @@ Esempio di `-t`:
 📊 minibench 2026-11-01 07:13:24 UTC · x2
 OK · steal 0.00/0.00 % · primo test
 CPU 1 core 1.04 · tutti (8 vCPU) 5.87 GB/s · scala 70.6 %
-disco W 0.55 · R 0.55 · 4k 0.03 GB/s [ext4]
+disco W 0.55 · R 0.55 GB/s · 4k random 6249 IOPS [ext4]
 ✅ nessun allarme
 ```
 
-- **Un test alla volta.** Due test insieme si falsano a vicenda: un blocco (`flock` su `/tmp/minibench.lock`) fa aspettare il secondo finché il primo non ha finito.
+- **Un test alla volta.** Due test insieme si falsano a vicenda: un blocco (`flock` su `.minibench.lock` accanto allo storico, non in `/tmp` dove chiunque potrebbe crearlo o tenerlo) fa aspettare il secondo finché il primo non ha finito.
 - **Test lunghi a parte.** Lo storico confronta solo test con lo stesso `-x`: un test x23 non si mischia con quelli normali.
 - Non modifica il sistema. Scrive un file temporaneo di 512 MB nella cartella del test disco e poi lo cancella.
 - Ogni lancio aggiunge una riga allo storico CSV (tranne con `-n`).
 
 ### ⚠️ Attenzione a `/tmp`: spesso è in RAM
 
-Su molti sistemi (Debian 13 compreso) `/tmp` è `tmpfs`, cioè sta **in RAM**. Un test disco fatto lì misura la RAM, non il disco. Le prime versioni dello script facevano proprio così: sul server di origine segnavano 1,0 GB/s in scrittura e 1,2 GB/s in 4k, mentre il disco vero fa **0,55 GB/s** e **0,03 GB/s** in 4k.
+Su molti sistemi (Debian 13 compreso) `/tmp` è `tmpfs`, cioè sta **in RAM**. Un test disco fatto lì misura la RAM, non il disco. Le prime versioni dello script facevano proprio così: sul server di origine segnavano 1,0 GB/s in scrittura e 4,5 GB/s in lettura, mentre il disco vero fa **0,55 GB/s** in tutte e due.
 Adesso il test disco si fa nella cartella dello script e il tipo di filesystem viene scritto nell'output e nel CSV (`disco_fs`). Se è `tmpfs` compare un avviso.
 - Requisiti: `bash`, `python3`, `openssl`, `dd`, `awk`, `ps`, `lscpu`, `taskset`, `timedatectl` (systemd).
 
@@ -150,7 +150,7 @@ Le vCPU che per la VM sono "SMT" sono andate **più forte** dei core "diversi": 
 | Steal sotto carico | steal mentre tutti i core lavorano | % | basso |
 | Consistenza CPU | 5 giri uguali in Python: il più veloce e il più lento | s | basso |
 | Disco scrittura / lettura | `dd` 512 MB, diretto senza cache | GB/s | alto |
-| Disco 4k | `dd` a blocchi da 4 KB | GB/s | alto |
+| Disco 4k random | letture da 4 KB in punti casuali, O_DIRECT, una alla volta, per 3 s | IOPS | alto |
 | Orologio | clocksource, NTP, drift RAW−MONOTONIC | — | drift ≈ 0 |
 
 ---
@@ -227,12 +227,13 @@ Colonne nell'ordine: data e ora UTC, verdetto, indice, poi le velocità in GB/s,
 
 ```
 giorno_utc, ora_utc, offset_ita, verdetto, indice_pct,
-cpu1_GBs, cpu_tutti_GBs, disco_scrittura_GBs, disco_lettura_GBs, disco_4k_GBs,
+cpu1_GBs, cpu_tutti_GBs, disco_scrittura_GBs, disco_lettura_GBs, disco_4k_GBs (vecchio, vuoto),
 giro_min_s, giro_max_s,
 steal_riposo_pct, steal_carico_pct,
 durata_s, clocksource, ntp_sync, drift_raw_mono_s, load1, vcpu,
 cpu_core_GBs, scala_pct, cpu_modello, core, thread_per_core, limite_cgroup,
-vcpu_sistema, core_sistema, affinity, x, disco_fs, disco_dir
+vcpu_sistema, core_sistema, affinity, x, disco_fs, disco_dir,
+disco_4k_iops, openssl_ver, python_ver, container
 ```
 
 - `x`: il moltiplicatore di `-x` (1 = test normale).
@@ -241,6 +242,25 @@ vcpu_sistema, core_sistema, affinity, x, disco_fs, disco_dir
 - `vcpu` e `core`: quelli **usati dal test** (dipendono da `-c`).
 - `vcpu_sistema` e `core_sistema`: quelli della macchina.
 - `affinity`: l'elenco esatto delle vCPU usate.
+
+---
+
+## Revisione del 1° novembre 2026 (cosa è stato corretto)
+
+Una revisione esterna ha trovato questi difetti, ora corretti:
+
+| # | Problema | Correzione |
+|---|---|---|
+| 1 | Il "4k" non era random: `skip` spostava di 4 MB al massimo e poi leggeva 80 MB di fila | 4k **random** vero su tutto il file, O_DIRECT, risultato in **IOPS** (`disco_4k_iops`). I valori vecchi non si confrontano |
+| 2 | Un aggiornamento di openssl o python cambia le misure, e lo script dava la colpa al provider | colonne `openssl_ver` e `python_ver`; si confrontano solo test con le stesse versioni |
+| 3 | Una misura fallita finiva nello storico come valore vuoto, senza errore | ogni misura viene controllata: se una manca, errore e niente riga nello storico |
+| 4 | `$F` senza virgolette: `-d` su cartelle con spazi rompeva il test | virgolette ovunque, provato con una cartella con gli spazi |
+| 5 | `exec taskset … || errore`: l'errore non poteva mai comparire | lista vCPU e `taskset` controllati **prima** dell'exec; `-c 0-20` su 8 vCPU ora dà errore |
+| 6 | Il lucchetto in `/tmp` poteva essere creato o tenuto da chiunque | lucchetto accanto allo storico; per gli utenti senza permessi, uno personale |
+| 7 | In un container lo steal di `/proc/stat` è quello di tutta la VM | rileva il container (`systemd-detect-virt`) e lo dice, anche nel riassunto `-t` |
+| 8 | Il README diceva 37 s, lo script 45 | allineati |
+
+Non è stato aggiunto `set -euo pipefail` a tutto lo script: farebbe uscire con errore anche dove un risultato vuoto è normale (per esempio `grep` che non trova niente). Al suo posto c'è il controllo esplicito delle misure del punto 3.
 
 ---
 
@@ -253,7 +273,7 @@ vcpu_sistema, core_sistema, affinity, x, disco_fs, disco_dir
 - Non misura RAM (overcommit) né rete (banda condivisa).
 
 Valori di riferimento del server di origine, 1 novembre 2026 di notte, 8 vCPU EPYC Milan:
-steal 0/0 % · CPU 1 core ~1,06 GB/s · 8 core 5,5–7,0 GB/s · giri 1,4–1,6 s · disco W 0,83–1,0 / R 3,4–5,3 / 4k 0,9–1,4 GB/s · durata ~37 s.
+steal 0/0 % · CPU 1 core ~1,06 GB/s · 8 core 5,5–7,0 GB/s · giri 1,4–1,6 s · disco ext4 W ~0,55 / R ~0,55 GB/s · 4k random ~5.800–6.700 IOPS · durata ~48 s.
 
 ---
 
@@ -266,7 +286,8 @@ Lo script è nato per uso interno. Prima di proporlo come strumento generico van
 - [ ] **Valori di riferimento** del server di origine nei commenti: vanno spostati in un file a parte o ricavati dallo storico della macchina.
 - [ ] **Fuso orario fisso** `Europe/Rome` nella colonna `offset_ita`: va reso configurabile o tolto, l'UTC basta.
 - [ ] **Solo italiano:** testi e colonne. Valutare una versione in inglese o una variabile per la lingua.
-- [ ] **Dipendenze non controllate:** se manca `openssl`, `python3` o `timedatectl` lo script dà valori vuoti invece di un errore chiaro. Serve un controllo iniziale.
+- [x] **Misure fallite:** se uno strumento non risponde e una misura esce vuota, il test si ferma con errore e non scrive nello storico.
+- [ ] **Controllo iniziale delle dipendenze:** manca ancora un elenco all'avvio di cosa non è installato.
 - [ ] **Solo systemd:** `timedatectl` non c'è su Alpine, sui container e su altri sistemi. Serve un'alternativa (`chronyc`, `ntpq`, `adjtimex`).
 - [x] **Disco:** prima scriveva in `/tmp`, che può essere tmpfs (RAM). Ora usa la cartella dello script o `-d DIR`, controlla lo spazio libero e avvisa se è tmpfs.
 - [x] **Due lanci insieme:** risolto con un blocco `flock`, il secondo aspetta.
