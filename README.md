@@ -15,6 +15,8 @@ Mini benchmark per VPS Linux in circa 37 secondi. Misura se il provider ti sta t
 | `minibench.sh` | lo script |
 | `README.md` | questa descrizione |
 | `SINTESI.txt` | riassunto breve da mandare su WhatsApp o Telegram |
+| `LICENSE` | licenza MIT |
+| `.gitignore` | esclude lo storico locale `minibench.csv` |
 | `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026, 27 test), come esempio di formato e di valori |
 
 ---
@@ -155,7 +157,7 @@ Lo script è nato per uso interno. Prima di proporlo come strumento generico van
 - [ ] **Storico accanto allo script:** se la cartella non è scrivibile, lo storico va perso. Serve un default in `~/.local/share` o un messaggio chiaro.
 - [ ] **Cambio di formato del CSV:** se l'intestazione non corrisponde, la riga non viene scritta. Serve una migrazione automatica o un file nuovo.
 - [ ] **ARM e macOS** non provati: `openssl speed` e `dd iflag=direct` cambiano.
-- [ ] **Licenza** da aggiungere.
+- [x] **Licenza:** MIT (file `LICENSE`).
 
 ---
 
