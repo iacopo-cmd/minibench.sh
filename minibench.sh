@@ -1,6 +1,15 @@
 #!/bin/bash
 # minibench - mini benchmark VPS: steal time, CPU single/multi, consistenza, disco.
 # ATTENZIONE: nato su un server preciso (una VPS) - DA AGGIUSTARE PER IL WEB, vedi README.md
+#
+# ############################################################################
+# ##  ATTENZIONE - FRENO ACCESO DI DEFAULT                                  ##
+# ##  Senza -r il test NON riparte prima di 30 MINUTI dall'ultimo: ristampa ##
+# ##  l'ultimo risultato. Test nuovo subito:  minibench.sh -r 0             ##
+# ##  Spegnerlo per sempre: riga "FRENO=" piu' sotto (cerca FRENO=),        ##
+# ##  metti 0 al posto di 30. Oppure una volta:  MINIBENCH_FRENO=0          ##
+# ############################################################################
+#
 # Non modifica il sistema. Durata ~23 s, ~26 s con il disco (-D) (misurati su 8 vCPU con SMT). -x N moltiplica tutto.
 #
 # SCHEMA 2 (dal 2026-11-01 ~08:45): default VELOCE, la precisione si sceglie con -x.
@@ -37,6 +46,12 @@
 #               volta sola; il confronto con la media usa sempre lo storico principale.
 #               FILE nuovo -> creato con l'intestazione. Se FILE e' lo storico stesso
 #               (o un link a lui) viene saltato, cosi' la riga non si scrive due volte.
+#   -r MIN      FRENO (di default ACCESO, 30 min): se nello storico c'e' gia' un test
+#               confrontabile (stesso -x, stessa affinity, disco se chiesto) piu' giovane di
+#               MIN minuti, NON rifa' il test: stampa quello. -r 0 = test sempre.
+#               Serve sui server condivisi: se 12 agenti lo lanciano insieme, il primo fa il
+#               test (gli altri aspettano il lucchetto) e gli altri 11 leggono il risultato.
+#               Valore di default cambiabile con MINIBENCH_FRENO=MIN.
 #   -A          archivia: sposta le righe vecchie dello storico in minibench-archivio-DATA.csv.gz
 #               (accanto allo storico) e tiene le ultime 1000. Non fa il test. Non cancella niente.
 #               Quando lo storico supera 1 MB (~2500 test) ogni test lo PROPONE, non lo fa da solo.
@@ -188,14 +203,17 @@ aiuto(){ sed -n '/^# Uso:/,/^# Due test/p' "$0" | sed 's/^# \{0,1\}//'; }
 ORIG=("$@")
 SCELTA=""; X=1; DISKDIR=""; TG=0; NOLOG=0
 DISCO=0; XSET=0; ARCHIVIA=0; OUT=()
+# >>> FRENO: 30 = minuti minimi fra due test (sotto, si ristampa l'ultimo). 0 = SPENTO per sempre. <<<
+FRENO=${MINIBENCH_FRENO:-30}       # per una volta sola: -r 0, oppure MINIBENCH_FRENO=0 minibench.sh
 CSV_KB=${MINIBENCH_CSV_KB:-1024}    # oltre questa dimensione lo storico propone il taglio
 TIENI=${MINIBENCH_TIENI:-1000}      # righe che -A lascia nello storico
 CONFERMA=${MINIBENCH_CONFERMA:-0}   # 1 = questo e' il test lungo di conferma di un possibile allarme
-while getopts "c:x:d:o:DtnAh" o; do case $o in
-  o) OUT+=("$OPTARG");; c) SCELTA=$OPTARG;; x) X=$OPTARG; XSET=1;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;; A) ARCHIVIA=1;;
+while getopts "c:x:d:o:r:DtnAh" o; do case $o in
+  o) OUT+=("$OPTARG");; r) FRENO=$OPTARG;; c) SCELTA=$OPTARG;; x) X=$OPTARG; XSET=1;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;; A) ARCHIVIA=1;;
   h) aiuto; exit 0;; *) aiuto; exit 2;; esac; done
 shift $((OPTIND-1))
 for f in "${OUT[@]}"; do d=$(dirname "$f"); [ -d "$d" ] && [ -w "$d" -o -w "$f" ] || { echo "-o $f: la cartella $d non esiste o non e' scrivibile"; exit 2; }; done
+[[ "$FRENO" =~ ^[0-9]+$ ]] || { echo "-r $FRENO: servono i minuti (0 = freno spento)"; exit 2; }
 [[ "$X" =~ ^[0-9]+$ ]] && (( X >= 1 && X <= 1000 )) || { echo "-x $X: serve un numero da 1 a 1000"; exit 2; }
 if [ -n "$SCELTA" ] && [ -z "${MINIBENCH_AFFINITY:-}" ]; then
   TOT=$(grep -c ^processor /proc/cpuinfo)
@@ -248,6 +266,54 @@ print(f"archiviati {len(vecchie)} test vecchi in {arch}")
 print(f"storico {log}: restano gli ultimi {len(nuove)} test ({os.path.getsize(log)//1024} KB)")
 ARCH
   exit $?
+fi
+# --- FRENO: c'e' gia' un test recente e confrontabile? allora niente test, si mostra quello.
+# Dentro il lucchetto: chi aspettava un altro test trova il suo risultato appena fatto.
+# Non vale per il test di conferma di un allarme (MINIBENCH_CONFERMA=1).
+if (( FRENO > 0 )) && [ "$CONFERMA" != 1 ] && [ -s "$LOG" ]; then
+  AFF_ORA=$(taskset -pc $$ 2>/dev/null | sed 's/.*: //')
+  if python3 -I - "$LOG" "$FRENO" "$X" "$DISCO" "$AFF_ORA" > "${SINTESI:-/dev/stdout}" <<'FRENO'
+import sys, csv, datetime as dt
+log, freno, x, disco, aff = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4] == "1", sys.argv[5]
+def norm(a):                                   # "0-3" e "0,1,2,3" sono la stessa affinity
+    v = set()
+    for p in a.replace('"', "").split(","):
+        p = p.strip()
+        if not p: continue
+        a1, _, b1 = p.partition("-"); v.update(range(int(a1), int(b1 or a1) + 1))
+    return v
+try:
+    righe = list(csv.DictReader(open(log, newline="")))
+except Exception:
+    sys.exit(1)
+ora = dt.datetime.now(dt.timezone.utc)
+for r in reversed(righe):
+    try:
+        quando = dt.datetime.fromisoformat(f"{r['giorno_utc']}T{r['ora_utc']}+00:00")
+    except Exception:
+        continue
+    eta = (ora - quando).total_seconds() / 60
+    if eta > freno: break                      # le righe prima sono ancora piu' vecchie
+    if r.get("x", "1") != x: continue
+    if disco and not r.get("disco_scrittura_GBs"): continue
+    try:
+        if aff and norm(r.get("affinity", "")) != norm(aff): continue
+    except ValueError:
+        continue
+    loc = quando.astimezone(dt.timezone(dt.timedelta(hours=int(r.get("offset_ita") or 1))))
+    print(f"🛑 FRENO: test gia' fatto {eta:.0f} min fa (limite {freno} min), non lo rifaccio.")
+    print(f"📊 minibench {loc:%d/%m %H:%M} (ora italiana): {r['verdetto']}, indice {r.get('indice_pct') or 'n/d'} %")
+    print(f"CPU 1 core {r['cpu1_GBs']} GB/s · tutti {r['cpu_tutti_GBs']} GB/s · steal {r['steal_riposo_pct']}/{r['steal_carico_pct']} %")
+    if r.get("disco_scrittura_GBs"):
+        print(f"disco scrittura {r['disco_scrittura_GBs']} GB/s · lettura {r['disco_lettura_GBs']} GB/s")
+    print("(test nuovo comunque: aggiungi -r 0)")
+    sys.exit(0)
+sys.exit(1)
+FRENO
+  then
+    [ -n "$SINTESI" ] && { exec 1>&3; cat "$SINTESI"; rm -f "$SINTESI"; }
+    exit 0
+  fi
 fi
 DISKFS=""; DW=""; DR=""; D4=""
 if (( DISCO )); then

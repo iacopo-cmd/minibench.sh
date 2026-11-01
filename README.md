@@ -8,6 +8,13 @@ Mini benchmark per VPS Linux in circa 23 secondi (26 con il disco, che di defaul
 
 ---
 
+
+> ## ⚠️ FRENO ACCESO DI DEFAULT: senza `-r` il test NON riparte prima di 30 minuti
+> Se l'ultimo test confrontabile ha meno di 30 minuti, lo script ristampa quello invece di rifare il test
+> (utile su server condivisi: 12 lanci insieme = 1 test vero). Test subito: `minibench.sh -r 0`.
+> Spegnerlo per sempre: in `minibench.sh` cerca la riga `FRENO=${MINIBENCH_FRENO:-30}` e metti `0` al posto di `30`
+> (oppure per un lancio: `MINIBENCH_FRENO=0 minibench.sh`).
+
 ## File nel repo
 
 | File | Cosa è |
@@ -45,6 +52,7 @@ bash minibench.sh /percorso/altro.csv
 | `-t` | stampa solo un riassunto di 5–8 righe, pronto da mandare in chat |
 | `-n` | non scrive nello storico (prova al volo) |
 | `-o FILE` | scrive la riga anche in FILE; si ripete (`-o a.csv -o b.csv`). Il test gira una volta, il confronto usa lo storico principale. Un link allo storico viene saltato |
+| `-r MIN` | **freno**, acceso di default a 30 min: se c'è già un test confrontabile più giovane di MIN minuti non rifà il test e stampa quello. `-r 0` = test sempre |
 | `-A` | archivia: sposta le righe vecchie dello storico in `minibench-archivio-DATA.csv.gz`, accanto allo storico, e tiene le ultime 1.000. Non fa il test e non cancella niente |
 | `-h` | aiuto |
 
