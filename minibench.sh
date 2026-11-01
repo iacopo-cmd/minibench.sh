@@ -16,6 +16,15 @@
 # Cos'e': dire al sistema "questo programma puo' girare SOLO su queste vCPU".
 #   Senza -c il test usa tutte le vCPU. Con -c lo chiudi in un recinto.
 #
+# DEFAULT (senza -c): prova su TUTTE le vCPU che trova (qui 8):
+#   1. CPU 1 core ......... 1 processo
+#   2. CPU tutti i core ... 1 processo per vCPU (8)
+#   3. CPU solo core ...... 1 processo per core (4), solo se c'e' SMT
+#   "Tutte" e' meno di 8 se: lo lanci gia' sotto taskset (nproc vede solo le
+#   vCPU permesse, riga "test su:") oppure dentro un container/servizio con
+#   limite CPU (es. cpus: "2"): lancia 8 processi ma ne rendono 2, lo scrive
+#   in "limite cgroup" e calcola la scala sulle CPU concesse.
+#
 # Perche' serve:
 #   1. Vedere come cresce la potenza: prova -c 1, -c 2, -c 4, -c 8.
 #      Se raddoppiando le vCPU la "CPU tutti i core" non raddoppia,

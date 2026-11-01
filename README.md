@@ -61,6 +61,18 @@ istruzioni:   aes avx2 sha_ni   hypervisor: kvm
 
 **Cos'è.** Dici al sistema: "questo programma può girare **solo** su queste vCPU". Senza `-c` il test usa tutte le vCPU; con `-c` lo chiudi in un recinto.
 
+**Di default (senza `-c`) prova su tutte le vCPU che trova**, sul server di origine 8:
+
+| Prova | Processi |
+|---|---|
+| CPU 1 core | 1 |
+| CPU tutti i core | 1 per vCPU (8) |
+| CPU solo core reali | 1 per core (4), solo se c'è SMT |
+
+"Tutte" può voler dire meno vCPU in due casi:
+- **Affinity già ristretta:** lo lanci già sotto `taskset`, quindi `nproc` vede solo le vCPU permesse e il test si adegua. Lo scrive nella riga `test su:`.
+- **Limite CPU:** gira dentro un container o un servizio limitato (Docker `cpus: "2"`, systemd `CPUQuota`). Lancia comunque un processo per vCPU, ma ne rendono solo quante il limite concede: lo segnala in `limite cgroup` e calcola la scala sulle CPU concesse.
+
 **Perché serve:**
 
 1. **Vedere come cresce la potenza.** Prova `-c 1`, `-c 2`, `-c 4`, `-c 8`. Se raddoppiando le vCPU la "CPU tutti i core" non raddoppia, le vCPU in più valgono meno di quanto sembra.
