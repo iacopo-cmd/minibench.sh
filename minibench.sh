@@ -1,14 +1,16 @@
 #!/bin/bash
 # minibench - mini benchmark VPS: steal time, CPU single/multi, consistenza, disco.
 # ATTENZIONE: nato su un server preciso (VPS) - DA AGGIUSTARE PER IL WEB, vedi README.md
-# Non modifica il sistema. Durata ~20 s, ~25 s con il disco (-D). -x N moltiplica tutto.
+# Non modifica il sistema. Durata ~23 s, ~26 s con il disco (-D) (misurati su 8 vCPU con SMT). -x N moltiplica tutto.
 #
 # SCHEMA 2 (dal 2026-11-01 ~08:45): default VELOCE, la precisione si sceglie con -x.
-#   Unita' base (-x 1): steal 5 s, CPU 1 core 1 s, istruzioni 1 s l'una, multi-core 3 s,
+#   Unita' base (-x 1): steal 5 s, CPU 1 core 3 s, istruzioni 1 s l'una, multi-core 3 s,
 #   solo core 3 s, 3 giri CPU, disco (solo -D/-d) 1 passata + 1 s di 4k random.
 #   Multi-core a 3 s e non 1 (revisione 08:50): con -multi 8 -seconds 1 l'avvio degli 8
 #   processi pesa quanto la misura -> 12,4 -> 9,6 GB/s fra due test uguali = falso allarme.
 #   Allarmi su CPU e indice solo con almeno 3 test di riferimento (lo steal sempre).
+#   CPU 1 core a 3 s (quarta revisione): la scala = CN / (C1 x N) dividerebbe una misura
+#   da 3 s per una da 1 s, riportando nel denominatore il rumore tolto dal numeratore.
 #   SCHEMA 3 = schema 2 con multi-core a 3 s (la riga di schema 2 non si confronta).
 #   -x 3 ~ vecchio default (60 s), -x 10 = alta precisione (~3 min).
 #   Non tutto a 1 giro: steal su 2 s e' casuale (il provider ruba a raffiche), 1 solo
@@ -142,7 +144,11 @@
 #   Su CPU senza un'estensione la prova gira lo stesso (in software): niente errori.
 # - Versioni di openssl e python nel CSV: un aggiornamento cambia le misure CPU,
 #   quindi si confrontano solo test con le stesse versioni.
-# - Se una misura fallisce (valore vuoto) il test si ferma e NON scrive nello storico.
+# - Se una misura CPU/steal fallisce (valore vuoto) il test si ferma e NON scrive nello storico.
+#   Il DISCO invece, se fallisce (filesystem senza O_DIRECT: tmpfs, ZFS, NFS, overlayfs),
+#   esce n/d e il test va avanti: CPU e steal non si buttano (terza revisione, 1/11).
+# - Steal calcolato sulle sole vCPU del test (righe cpuN di /proc/stat): con -c conta
+#   solo quelle scelte. In container o con limite cgroup resta quello di tutta la VM (nota).
 # - Non misura RAM (overcommit) ne' rete (banda condivisa).
 # - OROLOGIO (aggiunto 2026-11-01, utile per incrociare lo storico con un controllo
 #   periodico degli orologi): colonne clocksource (kvm-clock/tsc), ntp_sync
@@ -211,20 +217,29 @@ if (( DISCO )); then
   LIBERO_MB=$(df -Pm "$DISKDIR" | awk 'NR==2{print $4}')
   (( LIBERO_MB > 700 )) || { echo "disco: in $DISKDIR servono 700 MB liberi, ce ne sono $LIBERO_MB" >&2; exit 2; }
 else DISKDIR=""; fi
-stat_cpu(){ read -r _ u n s i w q sq st _ < <(grep '^cpu ' /proc/stat); echo "$((u+n+s+i+w+q+sq+st)) $st"; }
+# steal sommato SOLO sulle vCPU del test (righe cpuN di /proc/stat): con -c 4 conta lo steal di quelle 4,
+# non di tutta la macchina. Senza -c le vCPU sono tutte e il risultato e' lo stesso della riga "cpu".
+stat_cpu(){ awk -v a=",$AFF," '$1 ~ /^cpu[0-9]+$/ && index(a, "," substr($1,4) ",") {
+  for (i=2; i<=9; i++) tot += $i; st += $9 } END { print tot+0, st+0 }' /proc/stat; }
 pct(){ awk -v a="$1" -v b="$2" 'BEGIN{printf "%.2f",(b>0?100*a/b:0)}'; }
-dd_gbs(){ tail -1 | awk -F', ' '{split($1,b," "); split($3,s," "); printf "%.2f", b[1]/s[1]/1e9}'; }
+dd_gbs(){ awk -F', ' '/copied/{split($1,b," "); split($3,s," "); if (s[1] > 0) printf "%.2f", b[1]/s[1]/1e9}'; }  # niente output se dd fallisce
 # 4k RANDOM vero: letture da 4 KB in posizioni casuali su TUTTO il file, O_DIRECT (niente cache),
 # una alla volta (queue depth 1 = misura la latenza del disco). Stampa le IOPS.
 rand4k(){ python3 -I - "$1" "$2" <<'R4K'
 import os, sys, mmap, random, time
-fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECT)
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECT)   # tmpfs, ZFS, NFS, overlayfs: puo' non esserci
+except Exception:
+    sys.exit(0)                                             # niente output = n/d, il test va avanti
 blocchi = os.fstat(fd).st_size // 4096
+if blocchi == 0: sys.exit(0)              # file vuoto (scrittura fallita): n/d
 buf = mmap.mmap(-1, 4096)                 # buffer allineato, richiesto da O_DIRECT
 n = 0; t0 = time.monotonic(); fine = t0 + float(sys.argv[2])
 while True:
-    os.preadv(fd, [buf], random.randrange(blocchi) * 4096); n += 1
-    if n % 64 == 0 and time.monotonic() >= fine: break
+    try: os.preadv(fd, [buf], random.randrange(blocchi) * 4096)
+    except Exception: sys.exit(0)
+    n += 1
+    if time.monotonic() >= fine: break      # ogni lettura: sui dischi lenti (~100 IOPS) non sfora
 print(f"{n / (time.monotonic() - t0):.0f}")
 R4K
 }
@@ -277,12 +292,12 @@ fi
 LOAD=$(cut -d' ' -f1 /proc/loadavg); echo "load attuale: $(cut -d' ' -f1-3 /proc/loadavg)"
 
 (( X > 1 )) && { echo; echo "== TEST LUNGO x$X: tempi, giri e passate disco moltiplicati per $X (~$((20 * X)) s)"; }
-echo; echo "== STEAL a riposo ($((5 * X)) s)"
+echo; echo "== STEAL a riposo ($((5 * X)) s, sulle $N vCPU del test)"
 read -r t1 s1 < <(stat_cpu); sleep $((5 * X)); read -r t2 s2 < <(stat_cpu)
 ST0=$(pct $((s2-s1)) $((t2-t1))); echo "steal a riposo:       $ST0 %"
 
-echo; echo "== CPU 1 core (openssl sha256, $((1 * X)) s)"
-C1=$(openssl speed -seconds $((1 * X)) -bytes 16384 sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+echo; echo "== CPU 1 core (openssl sha256, $((3 * X)) s)"
+C1=$(openssl speed -seconds $((3 * X)) -bytes 16384 sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
 echo "CPU 1 core:           $C1 GB/s"
 
 # Stesse prove su 1 core, per CPU vecchie e nuove, Intel e AMD:
@@ -330,7 +345,7 @@ GMIN=$(echo $GIRI | tr ' ' '\n' | sort -n | head -1); GMAX=$(echo $GIRI | tr ' '
 if (( DISCO )); then
   echo; echo "== DISCO (512 MB, diretto, senza cache) in $DISKDIR [$DISKFS]$( (( X > 1 )) && echo ", $X passate, mediana")"
   [ "$DISKFS" = tmpfs ] && echo "  ATTENZIONE: $DISKDIR e' tmpfs = RAM. Questo NON e' il disco: usa -d su una cartella del disco."
-  mediana(){ tr ' ' '\n' | grep . | sort -n | awk '{v[NR]=$1} END{if(NR%2) print v[(NR+1)/2]; else printf "%.2f\n",(v[NR/2]+v[NR/2+1])/2}'; }
+  mediana(){ tr ' ' '\n' | grep . | sort -n | awk '{v[NR]=$1} END{if(NR==0) exit; if(NR%2) print v[(NR+1)/2]; else printf "%.2f\n",(v[NR/2]+v[NR/2+1])/2}'; }
   F=$(mktemp "$DISKDIR/.minibench-disco.XXXXXX"); trap 'rm -f "$F"' EXIT
   LW=""; LR=""; L4=""
   for k in $(seq 1 $X); do
@@ -339,9 +354,11 @@ if (( DISCO )); then
     L4="$L4 $(rand4k "$F" 1)"
   done
   DW=$(echo $LW | mediana); DR=$(echo $LR | mediana); D4=$(echo $L4 | mediana)
-  D4MB=$(awk -v i="$D4" 'BEGIN{printf "%.1f", i*4096/1e6}')
-  echo "scrittura:            $DW GB/s"; echo "lettura:              $DR GB/s"
-  echo "4k random:            $D4 IOPS  (= $D4MB MB/s; letture da 4 KB in punti casuali, una alla volta)"
+  echo "scrittura:            ${DW:-n/d} GB/s"; echo "lettura:              ${DR:-n/d} GB/s"
+  if [ -n "$D4" ]; then
+    echo "4k random:            $D4 IOPS  (= $(awk -v i="$D4" 'BEGIN{printf "%.1f", i*4096/1e6}') MB/s; letture da 4 KB in punti casuali, una alla volta)"
+  else echo "4k random:            n/d"; fi
+  [ -n "$DW" ] && [ -n "$DR" ] && [ -n "$D4" ] || echo "  NOTA DISCO: una o piu' misure n/d: probabilmente $DISKFS non supporta O_DIRECT. CPU e steal valgono lo stesso."
   rm -f "$F"
 else
   echo; echo "== DISCO: saltato (di default non si fa; -D = nella cartella dello script, -d DIR = altrove)"
@@ -366,7 +383,8 @@ echo "  Durata test e giri CPU: MONOTONIC (perf_counter). Data/ora nel CSV: UTC 
 echo "  drift quasi 0 (< 0.001 s) = orologio stabile, misure attendibili."
 
 # --- misure valide? Se uno strumento fallisce, niente righe sporche nello storico
-MISURE="C1 CN CB CA CV GMIN GMAX ST0 ST1 DUR"; (( DISCO )) && MISURE="$MISURE DW DR D4"
+# il disco NON e' in elenco: se manca resta n/d e il test va avanti (CPU e steal non si buttano)
+MISURE="C1 CN CB CA CV GMIN GMAX ST0 ST1 DUR"
 for v in $MISURE; do
   [[ "${!v}" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "ERRORE: misura $v non valida ('${!v}'): test interrotto, storico NON scritto" >&2; exit 3; }
 done
@@ -500,7 +518,8 @@ if SINTESI:
          + (f" · indice {ind} %" if ind else " · primo test"),
          f"CPU 1 core {cur['cpu1_GBs']} · tutti ({cur['vcpu']} vCPU) {cur['cpu_tutti_GBs']} GB/s · scala {cur['scala_pct']} %",
          f"base {cur['cpu1_base_GBs']} · AES {cur['aes_GBs']} · vett {cur['vett_GBs']} GB/s · x86-64-{cur['x86_livello']}",
-         (f"disco W {cur['disco_scrittura_GBs']} · R {cur['disco_lettura_GBs']} GB/s · 4k random {cur['disco_4k_iops']} IOPS [{cur['disco_fs']}]"
+         (f"disco W {cur['disco_scrittura_GBs'] or 'n/d'} · R {cur['disco_lettura_GBs'] or 'n/d'} GB/s · 4k random "
+          + (f"{cur['disco_4k_iops']} IOPS" if cur['disco_4k_iops'] else "n/d") + f" [{cur['disco_fs']}]"
           if cur["disco_fs"] else "disco: non misurato (-D)")]
     if cur["container"] != "none": s.append(f"⚠️ in container ({cur['container']}): steal = tutta la VM")
     if cur["disco_fs"] == "tmpfs": s.append("⚠️ disco misurato in RAM (tmpfs): usa -d")

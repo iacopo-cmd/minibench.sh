@@ -1,6 +1,6 @@
 # minibench
 
-Mini benchmark per VPS Linux in circa 20 secondi (25 con il disco, che di default non si fa). Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
+Mini benchmark per VPS Linux in circa 23 secondi (26 con il disco, che di default non si fa). Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
 
 > ⚠️ **DA AGGIUSTARE PER IL WEB**
 > Lo script è nato e tarato su **un server preciso**: VPS con 8 vCPU EPYC e Debian 13.
@@ -278,16 +278,17 @@ cpu1_base_GBs, aes_GBs, vett_GBs, x86_livello, cpu_flag, schema
 
 ## Cambio del 1° novembre 2026: default veloce (schema 2)
 
-**Cosa:** il test di default dura circa **20 secondi** invece di 50. La precisione la sceglie chi lo lancia, con `-x`.
+**Cosa:** il test di default dura circa **23 secondi** invece di 50. La precisione la sceglie chi lo lancia, con `-x`.
 
 | Prova | Prima | Ora (`-x 1`) |
 |---|---|---|
 | steal a riposo | 20 s | 5 s |
-| CPU 1 core, istruzioni (base, AES, vett) | 3 s ciascuna | 1 s ciascuna |
+| CPU 1 core | 3 s | **3 s** (vedi quarta revisione) |
+| istruzioni (base, AES, vett) | 3 s ciascuna | 1 s ciascuna |
 | CPU tutti i core, solo core | 5 s ciascuna | **3 s** ciascuna (vedi sotto) |
 | giri CPU | 5 | 3 |
 | disco | ogni volta | **solo con `-D` o `-d DIR`**, 1 passata + 1 s di 4k random |
-| **totale** | ~50 s | **~20 s** (~25 s con il disco) |
+| **totale** | ~50 s | **~23 s** (~26 s con il disco), misurati su 8 vCPU con SMT |
 
 `-x 3` vale circa il vecchio default (~50–60 s), `-x 10` è alta precisione (~3 min).
 
@@ -317,6 +318,16 @@ Due test uguali a 15 secondi di distanza, senza carico, hanno dato CPU tutti i c
 | Soglia CPU dall'80 al 70 % | **no**: è un rattoppo, lo sconsigliava anche il revisore |
 
 Verifica dopo la correzione: tre test di fila sul server di origine danno 5,37 / 5,92 / 6,81 GB/s con nessun allarme, in circa 20,5 s ciascuno. Uno scarto del ±12 % resta: è la variabilità reale della VPS, e si riduce con `-x`.
+
+### Terza e quarta revisione (1° novembre, ~09:00)
+
+| Problema | Correzione |
+|---|---|
+| **Il disco faceva abortire tutto.** Dove O_DIRECT non c'è (tmpfs, ZFS, NFS, alcuni overlayfs) il 4k andava in errore, la misura restava vuota e il test usciva con `exit 3`, buttando anche CPU e steal | il disco non è più fra le misure obbligatorie: se fallisce esce **n/d**, con una nota, e il test va avanti. Provato con un `dd` finto che fallisce: CPU e steal ci sono, disco n/d, exit 0 |
+| **Lo steal con `-c`** era quello di tutta la macchina | ora è calcolato **solo sulle vCPU del test**, sommando le righe `cpuN` di `/proc/stat`. In container o con limite cgroup resta quello di tutta la VM, e lo script lo dice |
+| **Il timer del 4k** guardava l'orologio ogni 64 letture: su un disco da ~100 IOPS sforava di mezzo secondo | ora controlla a ogni lettura |
+| **La scala** = CN / (C1 × N) divideva una misura da 3 s per una da 1 s | CPU 1 core portata a **3 s**, come il multi-core |
+| **La durata dichiarata** (~20 s) era rimasta quella di prima | misurata di nuovo: **~23 s**, ~26 s con il disco |
 
 ---
 
