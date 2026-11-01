@@ -276,6 +276,25 @@ cpu1_base_GBs, aes_GBs, vett_GBs, x86_livello, cpu_flag, schema
 
 ---
 
+## Conferma degli allarmi
+
+Se lanci il test **senza `-x`** e scatta un allarme, l'allarme **non viene mandato subito**:
+
+1. il test scrive `POSSIBILE ALLARME` e non mette niente nello storico;
+2. si rilancia da solo con `-x 3` (~1 minuto) e lo confronta con lo **stesso** storico;
+3. se l'allarme si ripete scrive **`ALLARME CONFERMATO dal test lungo x3`**; altrimenti scrive **`non confermato: era rumore`** e salva il test lungo, con `conferma=1` nel CSV.
+
+Con `-x` messo a mano la conferma non c'è: la precisione l'hai già scelta tu.
+
+Provato sul server di origine:
+
+| Simulazione | Risultato |
+|---|---|
+| CPU lenta sia nel test veloce sia nella conferma | `🚨 ALLARME CONFERMATO dal test lungo x3`, in 87 s |
+| CPU lenta solo nel test veloce | `✅ allarme del test veloce NON confermato dal test lungo x3: era rumore`, in 88 s |
+
+---
+
 ## Cambio del 1° novembre 2026: default veloce (schema 2)
 
 **Cosa:** il test di default dura circa **23 secondi** invece di 50. La precisione la sceglie chi lo lancia, con `-x`.

@@ -9,6 +9,11 @@
 #   Multi-core a 3 s e non 1 (revisione 08:50): con -multi 8 -seconds 1 l'avvio degli 8
 #   processi pesa quanto la misura -> 12,4 -> 9,6 GB/s fra due test uguali = falso allarme.
 #   Allarmi su CPU e indice solo con almeno 3 test di riferimento (lo steal sempre).
+#   CONFERMA DEGLI ALLARMI: se lanci SENZA -x e scatta un allarme, NON viene mandato.
+#   Il test non scrive nello storico e si rilancia da solo con -x 3 (~1 min), confrontato
+#   con lo stesso storico: se l'allarme si ripete -> "ALLARME CONFERMATO", altrimenti
+#   "non confermato: era rumore" e si salva il test lungo (colonna conferma=1).
+#   Con -x messo a mano niente conferma: la precisione l'hai gia' scelta tu.
 #   CPU 1 core a 3 s (quarta revisione): la scala = CN / (C1 x N) dividerebbe una misura
 #   da 3 s per una da 1 s, riportando nel denominatore il rumore tolto dal numeratore.
 #   SCHEMA 3 = schema 2 con multi-core a 3 s (la riga di schema 2 non si confronta).
@@ -174,9 +179,10 @@ export LC_ALL=C
 aiuto(){ sed -n '/^# Uso:/,/^# Due test/p' "$0" | sed 's/^# \{0,1\}//'; }
 ORIG=("$@")
 SCELTA=""; X=1; DISKDIR=""; TG=0; NOLOG=0
-DISCO=0
+DISCO=0; XSET=0
+CONFERMA=${MINIBENCH_CONFERMA:-0}   # 1 = questo e' il test lungo di conferma di un possibile allarme
 while getopts "c:x:d:Dtnh" o; do case $o in
-  c) SCELTA=$OPTARG;; x) X=$OPTARG;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;;
+  c) SCELTA=$OPTARG;; x) X=$OPTARG; XSET=1;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;;
   h) aiuto; exit 0;; *) aiuto; exit 2;; esac; done
 shift $((OPTIND-1))
 [[ "$X" =~ ^[0-9]+$ ]] && (( X >= 1 && X <= 1000 )) || { echo "-x $X: serve un numero da 1 a 1000"; exit 2; }
@@ -393,10 +399,10 @@ echo; echo "== VERDETTO STEAL"
 case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo "ATTENZIONE: host condiviso sotto carico (steal 1-5%)";; *) echo "MALE: VPS su host stracarico (steal > 5%)";; esac
 
 # --- confronto con la media degli ultimi 5 test (indice %) e scrittura storico ---
-python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
+MB_XSET=$XSET python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
   "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
   "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" "$X" "$DISKFS" "$DISKDIR" \
-  "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" 3 "$NOLOG" "$SINTESI" <<'PY'
+  "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" 3 "$CONFERMA" "$NOLOG" "$SINTESI" <<'PY'
 import sys, os, csv
 log = sys.argv[1]
 COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
@@ -406,7 +412,7 @@ COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
         "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
         "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir",
         "disco_4k_iops","openssl_ver","python_ver","container",
-        "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag","schema"]
+        "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag","schema","conferma"]
 # ordine degli argomenti passati da bash
 ARG = ["giorno_utc","ora_utc","offset_ita","verdetto","cpu1_GBs","cpu_tutti_GBs","giro_min_s","giro_max_s",
        "disco_scrittura_GBs","disco_lettura_GBs","disco_4k_GBs","steal_riposo_pct","steal_carico_pct","durata_s",
@@ -414,7 +420,7 @@ ARG = ["giorno_utc","ora_utc","offset_ita","verdetto","cpu1_GBs","cpu_tutti_GBs"
        "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
        "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir",
        "openssl_ver","python_ver","container",
-       "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag","schema"]
+       "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag","schema","conferma"]
 cur = dict(zip(ARG, sys.argv[2:2+len(ARG)]))
 # disco_4k: ora e' 4k RANDOM in IOPS (colonna nuova); la vecchia disco_4k_GBs (sequenziale, sbagliata) resta vuota
 cur["disco_4k_iops"] = cur.pop("disco_4k_GBs"); cur["disco_4k_GBs"] = ""
@@ -450,7 +456,8 @@ if os.path.exists(log) and os.path.getsize(log) > 0:
 stessa = [r for r in righe if r.get("vcpu") == cur["vcpu"] and r.get("cpu_modello", "") in ("", cur["cpu_modello"])
           and r.get("limite_cgroup", "nessuno") in ("", cur["limite_cgroup"])
           and r.get("affinity", "") in ("", cur["affinity"])
-          and (r.get("x") or "1") == cur["x"]
+          and (r.get("x") or "1") == ("1" if cur["conferma"] == "1" else cur["x"])
+          and r.get("conferma", "") != "1"
           and (r.get("schema") or "1") == cur["schema"]
           and r.get("openssl_ver", "") in ("", cur["openssl_ver"])
           and r.get("python_ver", "") in ("", cur["python_ver"])]
@@ -502,9 +509,19 @@ else:
 st0, st1 = f(cur["steal_riposo_pct"]), f(cur["steal_carico_pct"])
 if st1 is not None and st1 >= SOGLIA_STEAL_CARICO: allarmi.append(f"STEAL SOTTO CARICO {st1:.2f} % (SOGLIA {SOGLIA_STEAL_CARICO:.0f} %)")
 if st0 is not None and st0 >= SOGLIA_STEAL_RIPOSO: allarmi.append(f"STEAL A RIPOSO {st0:.2f} % (SOGLIA {SOGLIA_STEAL_RIPOSO:.0f} %)")
+DA_CONFERMARE = allarmi and cur["x"] == "1" and cur["conferma"] != "1" and os.environ.get("MB_XSET") == "0"
+if DA_CONFERMARE:
+    print("\n" + "?" * 70)
+    print("??? POSSIBILE ALLARME (test veloce, puo' essere rumore):")
+    for a in allarmi: print("??? - " + a)
+    print("??? NON lo mando: ripeto il test piu' lungo (x3) per capire se e' vero.")
+    print("?" * 70)
+    sys.exit(10)                     # niente riassunto, niente storico: decide il test di conferma
+if not allarmi and cur["conferma"] == "1":
+    print("\n=== Allarme del test veloce NON confermato dal test lungo x3: era rumore. ===")
 if allarmi:
     print("\n" + "!" * 70)
-    print("!!! ALLARME: CI STANNO A INCULA' LA CPU !!!")
+    print("!!! ALLARME" + (" CONFERMATO dal test lungo x3" if cur["conferma"] == "1" else "") + ": CI STANNO A INCULA' LA CPU !!!")
     for a in allarmi: print("!!! - " + a)
     print("!!! Prima guardare 'Processi pesanti' (altri lavori sulla macchina).")
     print("!!! Se non e' roba nostra: ripetere il test; se si ripete, segnalare al provider.")
@@ -523,8 +540,10 @@ if SINTESI:
           if cur["disco_fs"] else "disco: non misurato (-D)")]
     if cur["container"] != "none": s.append(f"⚠️ in container ({cur['container']}): steal = tutta la VM")
     if cur["disco_fs"] == "tmpfs": s.append("⚠️ disco misurato in RAM (tmpfs): usa -d")
+    if allarmi and cur["conferma"] == "1": s.append("🚨 ALLARME CONFERMATO dal test lungo x3:")
     for a in allarmi: s.append("🚨 " + a)
-    if not allarmi: s.append("✅ nessun allarme")
+    if not allarmi:
+        s.append("✅ allarme del test veloce NON confermato dal test lungo x3: era rumore" if cur["conferma"] == "1" else "✅ nessun allarme")
     open(SINTESI, "w").write("\n".join(s) + "\n")
 
 if NOLOG:
@@ -538,5 +557,13 @@ with open(log, "a", newline="") as fh:
     w.writerow(cur)
 print(f"storico: riga aggiunta a {log} ({len(righe)+1} test)")
 PY
+RC=$?
+if [ "$RC" = 10 ]; then
+  # possibile allarme nel test veloce: rilancio tutto con -x 3, confrontato con lo stesso storico
+  [ -n "$SINTESI" ] && { rm -f "$SINTESI"; exec 1>&3; }
+  (( TG )) && echo "⏳ possibile allarme nel test veloce: verifico con un test lungo (x3, ~1 min)..."
+  exec 9>&-                                   # rilascio il lucchetto: lo riprende il test di conferma
+  MINIBENCH_CONFERMA=1 exec "$0" -x 3 "${ORIG[@]}"
+fi
 if [ -n "$SINTESI" ]; then cat "$SINTESI" >&3; rm -f "$SINTESI"; fi
 exit 0
