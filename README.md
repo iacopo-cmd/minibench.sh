@@ -44,6 +44,7 @@ bash minibench.sh /percorso/altro.csv
 | `-d DIR` | fa **anche** il test disco, nella cartella DIR |
 | `-t` | stampa solo un riassunto di 5–8 righe, pronto da mandare in chat |
 | `-n` | non scrive nello storico (prova al volo) |
+| `-o FILE` | scrive la riga anche in FILE; si ripete (`-o a.csv -o b.csv`). Il test gira una volta, il confronto usa lo storico principale. Un link allo storico viene saltato |
 | `-A` | archivia: sposta le righe vecchie dello storico in `minibench-archivio-DATA.csv.gz`, accanto allo storico, e tiene le ultime 1.000. Non fa il test e non cancella niente |
 | `-h` | aiuto |
 

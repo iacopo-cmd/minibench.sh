@@ -33,11 +33,16 @@
 #               Se e' tmpfs (RAM) lo segnala: misureresti la RAM, non il disco
 #   -t          solo riassunto breve per Telegram/WhatsApp (5-8 righe)
 #   -n          non scrive nello storico (prova al volo)
+#   -o FILE     scrive la riga ANCHE in FILE (si ripete: -o a.csv -o b.csv). Il test gira una
+#               volta sola; il confronto con la media usa sempre lo storico principale.
+#               FILE nuovo -> creato con l'intestazione. Se FILE e' lo storico stesso
+#               (o un link a lui) viene saltato, cosi' la riga non si scrive due volte.
 #   -A          archivia: sposta le righe vecchie dello storico in minibench-archivio-DATA.csv.gz
 #               (accanto allo storico) e tiene le ultime 1000. Non fa il test. Non cancella niente.
 #               Quando lo storico supera 1 MB (~2500 test) ogni test lo PROPONE, non lo fa da solo.
 #   -h          aiuto
 # Esempi: minibench.sh -c 4   |   minibench.sh -D   |   minibench.sh -x 23   |   minibench.sh -t -n
+#          minibench.sh -o /percorso/copia1.csv -o /percorso/copia2.csv
 # Due test insieme si falsano: un blocco (flock) fa aspettare il secondo.
 #   lscpu -e mostra quali vCPU stanno sullo stesso core (stesso valore CORE).
 #
@@ -182,14 +187,15 @@ export LC_ALL=C
 aiuto(){ sed -n '/^# Uso:/,/^# Due test/p' "$0" | sed 's/^# \{0,1\}//'; }
 ORIG=("$@")
 SCELTA=""; X=1; DISKDIR=""; TG=0; NOLOG=0
-DISCO=0; XSET=0; ARCHIVIA=0
+DISCO=0; XSET=0; ARCHIVIA=0; OUT=()
 CSV_KB=${MINIBENCH_CSV_KB:-1024}    # oltre questa dimensione lo storico propone il taglio
 TIENI=${MINIBENCH_TIENI:-1000}      # righe che -A lascia nello storico
 CONFERMA=${MINIBENCH_CONFERMA:-0}   # 1 = questo e' il test lungo di conferma di un possibile allarme
-while getopts "c:x:d:DtnAh" o; do case $o in
-  c) SCELTA=$OPTARG;; x) X=$OPTARG; XSET=1;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;; A) ARCHIVIA=1;;
+while getopts "c:x:d:o:DtnAh" o; do case $o in
+  o) OUT+=("$OPTARG");; c) SCELTA=$OPTARG;; x) X=$OPTARG; XSET=1;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;; A) ARCHIVIA=1;;
   h) aiuto; exit 0;; *) aiuto; exit 2;; esac; done
 shift $((OPTIND-1))
+for f in "${OUT[@]}"; do d=$(dirname "$f"); [ -d "$d" ] && [ -w "$d" -o -w "$f" ] || { echo "-o $f: la cartella $d non esiste o non e' scrivibile"; exit 2; }; done
 [[ "$X" =~ ^[0-9]+$ ]] && (( X >= 1 && X <= 1000 )) || { echo "-x $X: serve un numero da 1 a 1000"; exit 2; }
 if [ -n "$SCELTA" ] && [ -z "${MINIBENCH_AFFINITY:-}" ]; then
   TOT=$(grep -c ^processor /proc/cpuinfo)
@@ -427,7 +433,7 @@ echo; echo "== VERDETTO STEAL"
 case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo "ATTENZIONE: host condiviso sotto carico (steal 1-5%)";; *) echo "MALE: VPS su host stracarico (steal > 5%)";; esac
 
 # --- confronto con la media degli ultimi 5 test (indice %) e scrittura storico ---
-MB_XSET=$XSET MB_CSV_KB=$CSV_KB MB_TIENI=$TIENI python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
+MB_OUT=$(printf '%s\n' "${OUT[@]}") MB_XSET=$XSET MB_CSV_KB=$CSV_KB MB_TIENI=$TIENI python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
   "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
   "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" "$X" "$DISKFS" "$DISKDIR" \
   "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" 3 "$CONFERMA" "$NOLOG" "$SINTESI" <<'PY'
@@ -612,6 +618,28 @@ with open(log, "a", newline="") as fh:
     if nuovo: w.writeheader()
     w.writerow(cur)
 print(f"storico: riga aggiunta a {log} ({len(righe)+1} test)")
+# -o: stessa riga anche negli altri file (saltato se e' lo storico stesso o un link a lui)
+fatti = {os.path.realpath(log)}
+for extra in filter(None, os.environ.get("MB_OUT", "").split("\n")):
+    vero = os.path.realpath(extra)
+    if vero == os.path.realpath(log):
+        print(f"   -o {extra}: e' lo storico (o un link a lui), saltato"); continue
+    if vero in fatti:
+        print(f"   -o {extra}: gia' scritto in questo test, saltato"); continue
+    fatti.add(vero)
+    try:
+        hdr = None
+        if os.path.exists(extra) and os.path.getsize(extra) > 0:
+            with open(extra, newline="") as fh: hdr = next(csv.reader(fh), None)
+        if hdr is not None and hdr != COLS:
+            print(f"   -o {extra}: intestazione diversa dal formato attuale, riga NON aggiunta"); continue
+        with open(extra, "a", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=COLS)
+            if hdr is None: w.writeheader()
+            w.writerow(cur)
+        print(f"   -o {extra}: riga aggiunta")
+    except OSError as e:
+        print(f"   -o {extra}: NON scritto ({e.strerror})")
 if proposta:
     print(f"\n📦 PROPOSTA: {proposta}.")
     print(f"   minibench.sh -A  sposta le righe vecchie in minibench-archivio-DATA.csv.gz e tiene le ultime {os.environ.get('MB_TIENI','1000')}.")
