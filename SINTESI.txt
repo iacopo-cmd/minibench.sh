@@ -1,0 +1,32 @@
+📊 MINIBENCH – test VPS (~37 s)
+
+Cosa misura:
+• Steal: CPU "rubata" da altri clienti sull'host
+• CPU 1 core e tutti i core (GB/s)
+• 5 giri CPU uguali (s): se variano, host conteso
+• Disco: scrittura, lettura, 4k (GB/s)
+
+Steal (la cosa più importante):
+<1% OK · 1-5% ATTENZIONE · >5% MALE, segnalare al provider
+Conta di più quello sotto carico.
+
+Indice:
+Ogni valore in % della media degli ultimi 5 test.
+100 = nella media · sopra = meglio · sotto = peggio
+≥105 migliorato · 95-105 costante · ≤95 peggiorato
+
+Allarme in MAIUSCOLO se:
+steal carico ≥5% · steal riposo ≥1% · CPU ≤80% della media · indice ≤85%
+
+Orologio:
+Tempi misurati con MONOTONIC: va solo avanti, NTP non lo fa saltare. L'ora di sistema invece sì.
+Drift <0,001 s = misure attendibili.
+
+Da ricordare:
+• Un test solo non dice niente, conta lo storico
+• Di notte è ottimista: fare test anche 10-13 e 18-22
+• Prima di dare colpa all'host guardare i processi pesanti
+• Non misura RAM né rete
+
+Riferimento notte 1/11:
+steal 0% · 1 core 1,06 · 8 core 5,5-7,0 GB/s · disco W ~1,0 / R 3,4-5,3 GB/s

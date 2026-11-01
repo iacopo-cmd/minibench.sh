@@ -8,6 +8,17 @@ Mini benchmark per VPS Linux in circa 37 secondi. Misura se il provider ti sta t
 
 ---
 
+## File nel repo
+
+| File | Cosa è |
+|---|---|
+| `minibench.sh` | lo script |
+| `README.md` | questa descrizione |
+| `SINTESI.txt` | riassunto breve da mandare su WhatsApp o Telegram |
+| `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026, 27 test), come esempio di formato e di valori |
+
+---
+
 ## Uso
 
 ```bash
