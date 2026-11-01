@@ -25,13 +25,43 @@ Mini benchmark per VPS Linux in circa 37 secondi. Misura se il provider ti sta t
 
 ```bash
 bash minibench.sh                  # tutte le vCPU, storico in minibench.csv accanto allo script
+bash minibench.sh -h               # aiuto
 bash minibench.sh -c 4             # solo le prime 4 vCPU (affinity)
-bash minibench.sh -c 0,2,4,6       # vCPU scelte a mano
+bash minibench.sh -x 23            # test lungo: tutto x23 (~17 minuti)
+bash minibench.sh -t               # solo riassunto breve per Telegram/WhatsApp
+bash minibench.sh -t -n            # riassunto, senza scrivere nello storico
+bash minibench.sh -d /data         # test disco in /data
 bash minibench.sh /percorso/altro.csv
 ```
 
-- Non modifica il sistema. Scrive un file temporaneo di 512 MB in `/tmp` e poi lo cancella.
-- Ogni lancio aggiunge una riga allo storico CSV.
+| Switch | Cosa fa |
+|---|---|
+| `-c N` o `-c lista` | affinity: solo le prime N vCPU, o quelle elencate (`0,2,4,6`, `4-7`) |
+| `-x N` | test lungo: secondi di misura, giri CPU e passate disco moltiplicati per N; sul disco si tiene la mediana delle passate |
+| `-d DIR` | cartella dove fare il test disco. Default: quella dello script |
+| `-t` | stampa solo un riassunto di 5–8 righe, pronto da mandare in chat |
+| `-n` | non scrive nello storico (prova al volo) |
+| `-h` | aiuto |
+
+Esempio di `-t`:
+
+```
+📊 minibench 2026-11-01 07:13:24 UTC · x2
+OK · steal 0.00/0.00 % · primo test
+CPU 1 core 1.04 · tutti (8 vCPU) 5.87 GB/s · scala 70.6 %
+disco W 0.55 · R 0.55 · 4k 0.03 GB/s [ext4]
+✅ nessun allarme
+```
+
+- **Un test alla volta.** Due test insieme si falsano a vicenda: un blocco (`flock` su `/tmp/minibench.lock`) fa aspettare il secondo finché il primo non ha finito.
+- **Test lunghi a parte.** Lo storico confronta solo test con lo stesso `-x`: un test x23 non si mischia con quelli normali.
+- Non modifica il sistema. Scrive un file temporaneo di 512 MB nella cartella del test disco e poi lo cancella.
+- Ogni lancio aggiunge una riga allo storico CSV (tranne con `-n`).
+
+### ⚠️ Attenzione a `/tmp`: spesso è in RAM
+
+Su molti sistemi (Debian 13 compreso) `/tmp` è `tmpfs`, cioè sta **in RAM**. Un test disco fatto lì misura la RAM, non il disco. Le prime versioni dello script facevano proprio così: sul server di origine segnavano 1,0 GB/s in scrittura e 1,2 GB/s in 4k, mentre il disco vero fa **0,55 GB/s** e **0,03 GB/s** in 4k.
+Adesso il test disco si fa nella cartella dello script e il tipo di filesystem viene scritto nell'output e nel CSV (`disco_fs`). Se è `tmpfs` compare un avviso.
 - Requisiti: `bash`, `python3`, `openssl`, `dd`, `awk`, `ps`, `lscpu`, `taskset`, `timedatectl` (systemd).
 
 ---
@@ -202,8 +232,11 @@ giro_min_s, giro_max_s,
 steal_riposo_pct, steal_carico_pct,
 durata_s, clocksource, ntp_sync, drift_raw_mono_s, load1, vcpu,
 cpu_core_GBs, scala_pct, cpu_modello, core, thread_per_core, limite_cgroup,
-vcpu_sistema, core_sistema, affinity
+vcpu_sistema, core_sistema, affinity, x, disco_fs, disco_dir
 ```
+
+- `x`: il moltiplicatore di `-x` (1 = test normale).
+- `disco_fs` e `disco_dir`: dove è stato fatto il test disco. Nelle righe vecchie risulta `tmpfs /tmp`, cioè RAM.
 
 - `vcpu` e `core`: quelli **usati dal test** (dipendono da `-c`).
 - `vcpu_sistema` e `core_sistema`: quelli della macchina.
@@ -235,8 +268,8 @@ Lo script è nato per uso interno. Prima di proporlo come strumento generico van
 - [ ] **Solo italiano:** testi e colonne. Valutare una versione in inglese o una variabile per la lingua.
 - [ ] **Dipendenze non controllate:** se manca `openssl`, `python3` o `timedatectl` lo script dà valori vuoti invece di un errore chiaro. Serve un controllo iniziale.
 - [ ] **Solo systemd:** `timedatectl` non c'è su Alpine, sui container e su altri sistemi. Serve un'alternativa (`chronyc`, `ntpq`, `adjtimex`).
-- [ ] **Disco:** scrive 512 MB in `/tmp`, che a volte è tmpfs, cioè in RAM: in quel caso misura la RAM e non il disco. Il percorso del test va reso configurabile e va controllato lo spazio libero.
-- [ ] **Due lanci insieme** si falsano a vicenda e mischiano lo storico. Serve un blocco con `flock`.
+- [x] **Disco:** prima scriveva in `/tmp`, che può essere tmpfs (RAM). Ora usa la cartella dello script o `-d DIR`, controlla lo spazio libero e avvisa se è tmpfs.
+- [x] **Due lanci insieme:** risolto con un blocco `flock`, il secondo aspetta.
 - [ ] **Storico accanto allo script:** se la cartella non è scrivibile, lo storico va perso. Serve un default in `~/.local/share` o un messaggio chiaro.
 - [ ] **Cambio di formato del CSV:** se l'intestazione non corrisponde, la riga non viene scritta. Serve una migrazione automatica o un file nuovo.
 - [ ] **ARM e macOS** non provati: `openssl speed` e `dd iflag=direct` cambiano.

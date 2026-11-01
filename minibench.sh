@@ -1,13 +1,19 @@
 #!/bin/bash
 # minibench - mini benchmark VPS: steal time, CPU single/multi, consistenza, disco.
 # ATTENZIONE: nato su un server preciso (VPS) - DA AGGIUSTARE PER IL WEB, vedi README.md
-# Non modifica il sistema. Durata ~37 s.
+# Non modifica il sistema. Durata ~45 s (moltiplicata per N con -x N).
 # Storico: ogni lancio aggiunge una riga a minibench.csv ACCANTO ALLO SCRIPT
 # (stessa cartella del .sh).
-# Uso:  minibench.sh                    tutte le vCPU, storico accanto allo script
-#       minibench.sh -c 4               solo le prime 4 vCPU (affinity con taskset)
-#       minibench.sh -c 0,2,4,6         vCPU scelte a mano (qui: 1 per core, niente SMT)
-#       minibench.sh [-c ...] file.csv  storico in un altro file
+# Uso:  minibench.sh [opzioni] [file.csv]      (minibench.sh -h = aiuto)
+#   -c N|lista  affinity: solo le prime N vCPU, o lista (0,2,4,6 / 4-7)
+#   -x N        test lungo: tempi, giri e passate disco moltiplicati per N
+#   -d DIR      cartella del test disco (default: quella dello script).
+#               Se e' tmpfs (RAM) lo segnala: misureresti la RAM, non il disco
+#   -t          solo riassunto breve per Telegram/WhatsApp (5-8 righe)
+#   -n          non scrive nello storico (prova al volo)
+#   -h          aiuto
+# Esempi: minibench.sh -c 4   |   minibench.sh -x 23   |   minibench.sh -t -n
+# Due test insieme si falsano: un blocco (flock) fa aspettare il secondo.
 #   lscpu -e mostra quali vCPU stanno sullo stesso core (stesso valore CORE).
 #
 # ---------------------------------------------------------------------------
@@ -133,20 +139,36 @@
 # ---------------------------------------------------------------------------
 export LC_ALL=C
 # --- affinity: -c N (prime N vCPU) o -c lista (es. 0,2,4,6 / 0-3). Rilancia lo script sotto taskset.
-SCELTA=""
-while getopts "c:" o; do case $o in c) SCELTA=$OPTARG;; *) echo "uso: $0 [-c N|lista] [file.csv]"; exit 2;; esac; done
+aiuto(){ sed -n '/^# Uso:/,/^# Due test/p' "$0" | sed 's/^# \{0,1\}//'; }
+ORIG=("$@")
+SCELTA=""; X=1; DISKDIR=""; TG=0; NOLOG=0
+while getopts "c:x:d:tnh" o; do case $o in
+  c) SCELTA=$OPTARG;; x) X=$OPTARG;; d) DISKDIR=$OPTARG;; t) TG=1;; n) NOLOG=1;;
+  h) aiuto; exit 0;; *) aiuto; exit 2;; esac; done
 shift $((OPTIND-1))
+[[ "$X" =~ ^[0-9]+$ ]] && (( X >= 1 && X <= 1000 )) || { echo "-x $X: serve un numero da 1 a 1000"; exit 2; }
 if [ -n "$SCELTA" ] && [ -z "${MINIBENCH_AFFINITY:-}" ]; then
   TOT=$(grep -c ^processor /proc/cpuinfo)
   if [[ "$SCELTA" =~ ^[0-9]+$ ]]; then
     (( SCELTA >= 1 && SCELTA <= TOT )) || { echo "-c $SCELTA: vCPU disponibili 1-$TOT"; exit 2; }
     LISTA="0-$((SCELTA-1))"
   else LISTA=$SCELTA; fi
-  MINIBENCH_AFFINITY="$LISTA" exec taskset -c "$LISTA" "$0" "$@" || { echo "taskset -c $LISTA fallito"; exit 2; }
+  MINIBENCH_AFFINITY="$LISTA" exec taskset -c "$LISTA" "$0" "${ORIG[@]}" || { echo "taskset -c $LISTA fallito"; exit 2; }
 fi
+# --- blocco: un test alla volta (due insieme si falsano a vicenda)
+exec 9>/tmp/minibench.lock
+if ! flock -n 9; then echo "Un altro minibench sta girando: aspetto che finisca..." >&2; flock 9; fi
+# --- -t: tutto l'output dettagliato va via, alla fine si stampa solo il riassunto
+SINTESI=""
+if (( TG )); then exec 3>&1 1>/dev/null; SINTESI=$(mktemp /tmp/minibench-sintesi.XXXXXX); fi
 orologi(){ python3 -I -c 'import time;m=time.clock_gettime(time.CLOCK_MONOTONIC);r=time.clock_gettime(time.CLOCK_MONOTONIC_RAW);print(f"{m:.6f} {r-m:.6f}")'; }
 read -r MONO0 RAWD0 < <(orologi)   # inizio: MONOTONIC e (RAW - MONOTONIC)
 N=$(nproc); DIR=$(dirname "$(readlink -f "$0")"); LOG="${1:-${DIR%/}/minibench.csv}"
+DISKDIR=${DISKDIR:-$DIR}
+[ -d "$DISKDIR" ] && [ -w "$DISKDIR" ] || { echo "-d $DISKDIR: cartella inesistente o non scrivibile" >&2; exit 2; }
+DISKFS=$(findmnt -n -o FSTYPE --target "$DISKDIR" 2>/dev/null || stat -f -c %T "$DISKDIR" 2>/dev/null || echo n/d)
+LIBERO_MB=$(df -Pm "$DISKDIR" | awk 'NR==2{print $4}')
+(( LIBERO_MB > 700 )) || { echo "-d $DISKDIR: servono 700 MB liberi, ce ne sono $LIBERO_MB" >&2; exit 2; }
 stat_cpu(){ read -r _ u n s i w q sq st _ < <(grep '^cpu ' /proc/stat); echo "$((u+n+s+i+w+q+sq+st)) $st"; }
 pct(){ awk -v a="$1" -v b="$2" 'BEGIN{printf "%.2f",(b>0?100*a/b:0)}'; }
 dd_gbs(){ tail -1 | awk -F', ' '{split($1,b," "); split($3,s," "); printf "%.2f", b[1]/s[1]/1e9}'; }
@@ -176,24 +198,25 @@ echo "istruzioni:   ${FLAG:-nessuna rilevante}  hypervisor: $(systemd-detect-vir
 echo "RAM:          $(free -h | awk '/Mem/{print $2}')"
 LOAD=$(cut -d' ' -f1 /proc/loadavg); echo "load attuale: $(cut -d' ' -f1-3 /proc/loadavg)"
 
-echo; echo "== STEAL a riposo (20 s)"
-read -r t1 s1 < <(stat_cpu); sleep 20; read -r t2 s2 < <(stat_cpu)
+(( X > 1 )) && { echo; echo "== TEST LUNGO x$X: tempi, giri e passate disco moltiplicati per $X (~$((45 * X / 60)) min)"; }
+echo; echo "== STEAL a riposo ($((20 * X)) s)"
+read -r t1 s1 < <(stat_cpu); sleep $((20 * X)); read -r t2 s2 < <(stat_cpu)
 ST0=$(pct $((s2-s1)) $((t2-t1))); echo "steal a riposo:       $ST0 %"
 
-echo; echo "== CPU 1 core (openssl sha256, 3 s)"
-C1=$(openssl speed -seconds 3 -bytes 16384 sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+echo; echo "== CPU 1 core (openssl sha256, $((3 * X)) s)"
+C1=$(openssl speed -seconds $((3 * X)) -bytes 16384 sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
 echo "CPU 1 core:           $C1 GB/s"
 
-echo; echo "== CPU tutti i core ($N processi, 5 s) + steal sotto carico"
+echo; echo "== CPU tutti i core ($N processi, $((5 * X)) s) + steal sotto carico"
 read -r t1 s1 < <(stat_cpu)
-CN=$(openssl speed -seconds 5 -bytes 16384 -multi $N sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+CN=$(openssl speed -seconds $((5 * X)) -bytes 16384 -multi $N sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
 read -r t2 s2 < <(stat_cpu)
 ST1=$(pct $((s2-s1)) $((t2-t1)))
 echo "CPU tutti i core:     $CN GB/s  ($N vCPU)"; echo "steal sotto carico:   $ST1 %"
 CC=""
 if [ "$TPC" -gt 1 ] && [ "$CORE" -lt "$N" ]; then
-  echo; echo "== CPU solo core reali ($CORE processi, 5 s): quanto rende l'SMT"
-  CC=$(openssl speed -seconds 5 -bytes 16384 -multi $CORE sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+  echo; echo "== CPU solo core reali ($CORE processi, $((5 * X)) s): quanto rende l'SMT"
+  CC=$(openssl speed -seconds $((5 * X)) -bytes 16384 -multi $CORE sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
   echo "CPU $CORE core:            $CC GB/s   -> con SMT ($N vCPU): $CN GB/s  ($(awk -v a="$CC" -v b="$CN" 'BEGIN{printf "%+.0f",(a>0?(b/a-1)*100:0)}') %)"
 fi
 # CPU concesse davvero: le vCPU, o meno se c'e' un limite cgroup
@@ -202,19 +225,26 @@ SCALA=$(awk -v c1="$C1" -v cn="$CN" -v n="$NEFF" 'BEGIN{printf "%.1f",(c1>0?cn/(
 echo "scala:                $SCALA %  (CPU tutti / (CPU 1 core x $NEFF CPU concesse): 100 % = ogni CPU vale un core pieno)"
 [ "$LIMITE" != nessuno ] && echo "  NOTA: limite cgroup $LIMITE CPU: il multi-core misura il LIMITE, non la macchina"
 
-echo; echo "== CONSISTENZA CPU (5 giri uguali, 1 core)"
-GIRI=""; for k in 1 2 3 4 5; do g=$(/usr/bin/env python3 -I -c "
+echo; echo "== CONSISTENZA CPU ($((5 * X)) giri uguali, 1 core)"
+GIRI=""; for k in $(seq 1 $((5 * X))); do g=$(/usr/bin/env python3 -I -c "
 import time;t=time.perf_counter();x=0
 for i in range(6_000_000): x+=i*i
 print(f'{time.perf_counter()-t:.3f}')"); echo "giro $k: $g s"; GIRI="$GIRI $g"; done
 GMIN=$(echo $GIRI | tr ' ' '\n' | sort -n | head -1); GMAX=$(echo $GIRI | tr ' ' '\n' | sort -n | tail -1)
 
-echo; echo "== DISCO (512 MB, diretto, senza cache)"
-F=$(mktemp /tmp/minibench.XXXXXX)
-DW=$(dd if=/dev/zero of=$F bs=1M count=512 oflag=direct conv=fsync 2>&1 | dd_gbs); echo "scrittura:            $DW GB/s"
-DR=$(dd if=$F of=/dev/null bs=1M iflag=direct 2>&1 | dd_gbs);                     echo "lettura:              $DR GB/s"
-D4=$(dd if=$F of=/dev/null bs=4k count=20000 iflag=direct skip=$((RANDOM%1000)) 2>&1 | dd_gbs); echo "lettura 4k:           $D4 GB/s"
-rm -f $F
+echo; echo "== DISCO (512 MB, diretto, senza cache) in $DISKDIR [$DISKFS]$( (( X > 1 )) && echo ", $X passate, mediana")"
+[ "$DISKFS" = tmpfs ] && echo "  ATTENZIONE: $DISKDIR e' tmpfs = RAM. Questo NON e' il disco: usa -d su una cartella del disco."
+mediana(){ tr ' ' '\n' | grep . | sort -n | awk '{v[NR]=$1} END{if(NR%2) print v[(NR+1)/2]; else printf "%.2f\n",(v[NR/2]+v[NR/2+1])/2}'; }
+F=$(mktemp "$DISKDIR/.minibench-disco.XXXXXX"); trap 'rm -f "$F"' EXIT
+LW=""; LR=""; L4=""
+for k in $(seq 1 $X); do
+  LW="$LW $(dd if=/dev/zero of=$F bs=1M count=512 oflag=direct conv=fsync 2>&1 | dd_gbs)"
+  LR="$LR $(dd if=$F of=/dev/null bs=1M iflag=direct 2>&1 | dd_gbs)"
+  L4="$L4 $(dd if=$F of=/dev/null bs=4k count=20000 iflag=direct skip=$((RANDOM%1000)) 2>&1 | dd_gbs)"
+done
+DW=$(echo $LW | mediana); DR=$(echo $LR | mediana); D4=$(echo $L4 | mediana)
+echo "scrittura:            $DW GB/s"; echo "lettura:              $DR GB/s"; echo "lettura 4k:           $D4 GB/s"
+rm -f "$F"
 
 echo; echo "== Processi pesanti in questo momento"; ps -eo pcpu,rss,comm --sort=-pcpu | head -6
 read -r MONO1 RAWD1 < <(orologi)   # fine
@@ -241,7 +271,8 @@ case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo 
 # --- confronto con la media degli ultimi 5 test (indice %) e scrittura storico ---
 python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
   "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
-  "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" <<'PY'
+  "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" "$X" "$DISKFS" "$DISKDIR" \
+  "$NOLOG" "$SINTESI" <<'PY'
 import sys, os, csv
 log = sys.argv[1]
 COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
@@ -249,14 +280,15 @@ COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
         "giro_min_s","giro_max_s",
         "steal_riposo_pct","steal_carico_pct","durata_s","clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu",
         "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
-        "vcpu_sistema","core_sistema","affinity"]
+        "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir"]
 # ordine degli argomenti passati da bash
 ARG = ["giorno_utc","ora_utc","offset_ita","verdetto","cpu1_GBs","cpu_tutti_GBs","giro_min_s","giro_max_s",
        "disco_scrittura_GBs","disco_lettura_GBs","disco_4k_GBs","steal_riposo_pct","steal_carico_pct","durata_s",
        "clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu",
        "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
-       "vcpu_sistema","core_sistema","affinity"]
-cur = dict(zip(ARG, sys.argv[2:]))
+       "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir"]
+cur = dict(zip(ARG, sys.argv[2:2+len(ARG)]))
+NOLOG = sys.argv[2+len(ARG)] == "1"; SINTESI = sys.argv[3+len(ARG)]
 # raggruppate per unita': prima GB/s, poi secondi, poi %
 # gruppo, metrica, colonna, modo: 'alto' = piu' alto meglio, 'basso' = piu' basso meglio, 'steal'
 METRICHE = [("GB/s  (piu alto = meglio)","CPU 1 core","cpu1_GBs","alto"), (None,"CPU tutti i core","cpu_tutti_GBs","alto"),
@@ -286,9 +318,11 @@ if os.path.exists(log) and os.path.getsize(log) > 0:
 # solo test fatti con la stessa CPU e lo stesso numero di vCPU (righe vecchie senza modello: conta solo vcpu)
 stessa = [r for r in righe if r.get("vcpu") == cur["vcpu"] and r.get("cpu_modello", "") in ("", cur["cpu_modello"])
           and r.get("limite_cgroup", "nessuno") in ("", cur["limite_cgroup"])
-          and r.get("affinity", "") in ("", cur["affinity"])]
+          and r.get("affinity", "") in ("", cur["affinity"])
+          and (r.get("x") or "1") == cur["x"]
+          and (r.get("disco_fs") or "tmpfs") == cur["disco_fs"]]
 if len(stessa) < len(righe):
-    print(f"\nNOTA: {len(righe)-len(stessa)} test dello storico fatti con CPU, vCPU, affinity o limite diversi: esclusi dal confronto")
+    print(f"\nNOTA: {len(righe)-len(stessa)} test dello storico fatti con CPU, vCPU, affinity, limite, -x o disco diversi: esclusi dal confronto")
 rif = stessa[-N_RIF:]
 def media(col):
     v = [x for x in (f(r.get(col)) for r in rif) if x is not None]
@@ -331,6 +365,21 @@ if allarmi:
     print("!!! Se non e' roba nostra: ripetere il test; se si ripete, segnalare al provider.")
     print("!" * 70)
 
+# --- riassunto breve (-t) per Telegram/WhatsApp
+if SINTESI:
+    ind = cur.get("indice_pct") or ""
+    s = [f"📊 minibench {cur['giorno_utc']} {cur['ora_utc']} UTC" + (f" · x{cur['x']}" if cur["x"] != "1" else ""),
+         f"{cur['verdetto']} · steal {cur['steal_riposo_pct']}/{cur['steal_carico_pct']} %"
+         + (f" · indice {ind} %" if ind else " · primo test"),
+         f"CPU 1 core {cur['cpu1_GBs']} · tutti ({cur['vcpu']} vCPU) {cur['cpu_tutti_GBs']} GB/s · scala {cur['scala_pct']} %",
+         f"disco W {cur['disco_scrittura_GBs']} · R {cur['disco_lettura_GBs']} · 4k {cur['disco_4k_GBs']} GB/s [{cur['disco_fs']}]"]
+    if cur["disco_fs"] == "tmpfs": s.append("⚠️ disco misurato in RAM (tmpfs): usa -d")
+    for a in allarmi: s.append("🚨 " + a)
+    if not allarmi: s.append("✅ nessun allarme")
+    open(SINTESI, "w").write("\n".join(s) + "\n")
+
+if NOLOG:
+    print("storico: NON scritto (-n)"); sys.exit(0)
 nuovo = not righe
 if righe and list(righe[0].keys()) != COLS:
     print(f"ATTENZIONE: intestazione di {log} diversa dal formato attuale, riga non aggiunta"); sys.exit(0)
@@ -340,4 +389,5 @@ with open(log, "a", newline="") as fh:
     w.writerow(cur)
 print(f"storico: riga aggiunta a {log} ({len(righe)+1} test)")
 PY
+if [ -n "$SINTESI" ]; then cat "$SINTESI" >&3; rm -f "$SINTESI"; fi
 exit 0
