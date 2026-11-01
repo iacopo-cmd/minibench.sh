@@ -17,7 +17,7 @@ Mini benchmark per VPS Linux in circa 37 secondi. Misura se il provider ti sta t
 | `SINTESI.txt` | riassunto breve da mandare su WhatsApp o Telegram |
 | `LICENSE` | licenza MIT |
 | `.gitignore` | esclude lo storico locale `minibench.csv` |
-| `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026, 28 test), come esempio di formato e di valori |
+| `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026, 29 test: 28 col disco in RAM, 1 sul disco vero), come esempio di formato e di valori |
 
 ---
 
