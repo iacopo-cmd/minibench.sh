@@ -3,7 +3,7 @@
 Mini benchmark per VPS Linux in circa 23 secondi (26 con il disco, che di default non si fa). Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
 
 > ⚠️ **DA AGGIUSTARE PER IL WEB**
-> Lo script è nato e tarato su **un server preciso**: VPS con 8 vCPU EPYC e Debian 13.
+> Lo script è nato e tarato su **un server preciso**: una VPS con 8 vCPU EPYC e Debian 13.
 > Funziona, ma prima di usarlo altrove va sistemato. Vedi la sezione [Da aggiustare per il web](#da-aggiustare-per-il-web).
 
 ---
