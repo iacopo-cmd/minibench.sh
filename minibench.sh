@@ -1,9 +1,48 @@
 #!/bin/bash
 # minibench - mini benchmark VPS: steal time, CPU single/multi, consistenza, disco.
-# ATTENZIONE: tarato su un server preciso (VPS 8 vCPU) - DA AGGIUSTARE PER IL WEB, vedi README.md
+# ATTENZIONE: nato su un server preciso (VPS) - DA AGGIUSTARE PER IL WEB, vedi README.md
 # Non modifica il sistema. Durata ~37 s.
 # Storico: ogni lancio aggiunge una riga a minibench.csv ACCANTO ALLO SCRIPT
-# (stessa cartella del .sh). Uso: minibench.sh [altro-file.csv]
+# (stessa cartella del .sh).
+# Uso:  minibench.sh                    tutte le vCPU, storico accanto allo script
+#       minibench.sh -c 4               solo le prime 4 vCPU (affinity con taskset)
+#       minibench.sh -c 0,2,4,6         vCPU scelte a mano (qui: 1 per core, niente SMT)
+#       minibench.sh [-c ...] file.csv  storico in un altro file
+#   lscpu -e mostra quali vCPU stanno sullo stesso core (stesso valore CORE).
+#
+# ---------------------------------------------------------------------------
+# AFFINITY SPIEGATA SEMPLICE (-c)
+# ---------------------------------------------------------------------------
+# Cos'e': dire al sistema "questo programma puo' girare SOLO su queste vCPU".
+#   Senza -c il test usa tutte le vCPU. Con -c lo chiudi in un recinto.
+#
+# Perche' serve:
+#   1. Vedere come cresce la potenza: prova -c 1, -c 2, -c 4, -c 8.
+#      Se raddoppiando le vCPU la "CPU tutti i core" non raddoppia,
+#      le vCPU in piu' valgono meno di quanto sembra.
+#   2. Scoprire l'SMT (hyperthreading): 2 vCPU sullo stesso core si dividono
+#      lo stesso core fisico, quindi rendono meno di 2 core veri.
+#        -c 0,1        2 vCPU sullo STESSO core (secondo la VM)
+#        -c 0,2        2 vCPU su core DIVERSI
+#      Se 0,2 va molto piu' forte di 0,1: l'SMT e' vero.
+#      Se vanno uguali: la topologia mostrata dalla VM e' finta (la decide
+#      l'hypervisor), sotto le vCPU stanno dove vuole il provider.
+#   3. Simulare una macchina piu' piccola: -c 2 = "come andrebbe con 2 vCPU".
+#   4. Trovare una vCPU lenta: -c 0, poi -c 3, poi -c 7 ... (1 core per volta).
+#
+# Esempi:
+#   minibench.sh -c 1          solo la vCPU 0
+#   minibench.sh -c 4          vCPU 0,1,2,3 (le prime 4)
+#   minibench.sh -c 0,2,4,6    4 vCPU, una per core
+#   minibench.sh -c 4-7        vCPU dalla 4 alla 7
+#
+# Da sapere:
+#   - Lo storico confronta solo test con la STESSA affinity: -c 4 non viene
+#     mischiato con i test su tutte le vCPU.
+#   - Numero semplice (-c 4) = le prime N vCPU. Per sceglierle usa la lista.
+#   - Prova trovata il 2026-11-01 su questo server: -c 0-3 (2 core "SMT") =
+#     3.97 GB/s, -c 0,2,4,6 (4 core diversi) = 3.29 GB/s. Cioe' la topologia
+#     dichiarata dalla VM NON corrisponde all'hardware vero (1 test, da ripetere).
 # Date SOLO in UTC (dal kernel, niente salti per ora legale). offset_ita = +1 inverno, +2 estate.
 #
 # ---------------------------------------------------------------------------
@@ -38,7 +77,7 @@
 # COS'E' LO STEAL TIME (la cosa piu' importante di questo test)
 # ---------------------------------------------------------------------------
 # Questo server e' una VPS: una macchina virtuale (KVM) su un server fisico
-# del provider, che lo divide tra tanti clienti. Le nostre 8 vCPU sono "prestate"
+# del provider, che lo divide tra tanti clienti. Le vCPU della VM sono "prestate"
 # dalle CPU fisiche di quell'host.
 #
 # Steal time = percentuale di tempo in cui la nostra VM voleva usare la CPU
@@ -70,11 +109,32 @@
 #   CLOCK_MONOTONIC durante il test (NTP che corregge la frequenza). Non entrano
 #   nell'indice. La durata ora e' misurata con MONOTONIC: una correzione NTP
 #   durante il test non la falsa piu' (prima usava date = REALTIME).
-# - Riferimento 2026-11-01 notte (8 vCPU EPYC Milan):
+# - CPU: lo script NON presume niente. Legge la CPU reale (lscpu): modello, vCPU,
+#   core x thread (SMT), limite cgroup/container, e fa il test multi-core con
+#   TUTTE le vCPU che trova (nproc) e, se c'e' SMT, anche con i soli core.
+#   scala_pct = CPU tutti / (CPU 1 core x vCPU) x 100: quanta potenza reale danno
+#   le vCPU rispetto a N core pieni (con SMT 2 thread/core e' normale ~55-65 %).
+#   Il confronto con la media usa solo test fatti con la STESSA CPU e lo stesso
+#   numero di vCPU e lo stesso limite cgroup (se cambia la VPS, o lo lanci
+#   dentro un container limitato, lo storico non viene mischiato).
+#   Con limite cgroup la scala e' calcolata sulle CPU concesse, non sulle vCPU.
+# - Riferimento 2026-11-01 notte (server di origine: 8 vCPU = 4 core x 2 thread, EPYC Milan):
 #   steal 0/0 %, CPU 1 core ~1.06 GB/s, 8 core 5.5-7.0 GB/s, giri 1.4-1.6 s,
 #   disco W 0.83-1.0 GB/s, R 3.4-5.3 GB/s, 4k 0.9-1.4 GB/s, durata ~37 s.
 # ---------------------------------------------------------------------------
 export LC_ALL=C
+# --- affinity: -c N (prime N vCPU) o -c lista (es. 0,2,4,6 / 0-3). Rilancia lo script sotto taskset.
+SCELTA=""
+while getopts "c:" o; do case $o in c) SCELTA=$OPTARG;; *) echo "uso: $0 [-c N|lista] [file.csv]"; exit 2;; esac; done
+shift $((OPTIND-1))
+if [ -n "$SCELTA" ] && [ -z "${MINIBENCH_AFFINITY:-}" ]; then
+  TOT=$(grep -c ^processor /proc/cpuinfo)
+  if [[ "$SCELTA" =~ ^[0-9]+$ ]]; then
+    (( SCELTA >= 1 && SCELTA <= TOT )) || { echo "-c $SCELTA: vCPU disponibili 1-$TOT"; exit 2; }
+    LISTA="0-$((SCELTA-1))"
+  else LISTA=$SCELTA; fi
+  MINIBENCH_AFFINITY="$LISTA" exec taskset -c "$LISTA" "$0" "$@" || { echo "taskset -c $LISTA fallito"; exit 2; }
+fi
 orologi(){ python3 -I -c 'import time;m=time.clock_gettime(time.CLOCK_MONOTONIC);r=time.clock_gettime(time.CLOCK_MONOTONIC_RAW);print(f"{m:.6f} {r-m:.6f}")'; }
 read -r MONO0 RAWD0 < <(orologi)   # inizio: MONOTONIC e (RAW - MONOTONIC)
 N=$(nproc); DIR=$(dirname "$(readlink -f "$0")"); LOG="${1:-${DIR%/}/minibench.csv}"
@@ -82,7 +142,29 @@ stat_cpu(){ read -r _ u n s i w q sq st _ < <(grep '^cpu ' /proc/stat); echo "$(
 pct(){ awk -v a="$1" -v b="$2" 'BEGIN{printf "%.2f",(b>0?100*a/b:0)}'; }
 dd_gbs(){ tail -1 | awk -F', ' '{split($1,b," "); split($3,s," "); printf "%.2f", b[1]/s[1]/1e9}'; }
 
-echo "== HW"; grep -m1 'model name' /proc/cpuinfo; echo "vCPU: $N  RAM: $(free -h | awk '/Mem/{print $2}')  hypervisor: $(systemd-detect-virt)"
+lsc(){ LC_ALL=C lscpu 2>/dev/null | awk -F: -v k="$1" '$1==k{sub(/^[ \t]+/,"",$2); print $2; exit}'; }
+MODELLO=$(lsc "Model name"); [ -n "$MODELLO" ] || MODELLO=$(awk -F: '/model name/{sub(/^ /,"",$2);print $2;exit}' /proc/cpuinfo)
+VCPU_TOT=$(lsc "CPU(s)"); TPC=$(lsc "Thread(s) per core"); CPS=$(lsc "Core(s) per socket"); SOCK=$(lsc "Socket(s)")
+TPC=${TPC:-1}; CPS=${CPS:-$N}; SOCK=${SOCK:-1}; CORE_SIS=$((CPS * SOCK))
+# vCPU su cui gira il test (affinity) e quanti core reali diversi coprono
+AFF=$(python3 -I -c 'import os;s=sorted(os.sched_getaffinity(0));print(",".join(map(str,s)))')
+CORE=$(LC_ALL=C lscpu -p=CPU,CORE,SOCKET 2>/dev/null | grep -v '^#' | awk -F, -v a="$AFF" 'BEGIN{n=split(a,x,",");for(i=1;i<=n;i++)ok[x[i]]=1} ($1 in ok){c[$3","$2]=1} END{k=0;for(i in c)k++;print k}')
+[ "${CORE:-0}" -gt 0 ] || CORE=$N
+# limite CPU del cgroup (docker/systemd CPUQuota): cpu.max = "quota periodo" o "max periodo"
+LIMITE="nessuno"; cg=$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup 2>/dev/null)
+while [ -n "$cg" ]; do
+  if [ -r "/sys/fs/cgroup$cg/cpu.max" ]; then read -r q per < "/sys/fs/cgroup$cg/cpu.max"
+    [ "$q" != "max" ] && { LIMITE=$(awk -v q="$q" -v p="$per" 'BEGIN{printf "%.2f", q/p}'); break; }; fi
+  [ "$cg" = "/" ] && break; cg=$(dirname "$cg")
+done
+FLAG=$(grep -m1 -o -w -E 'avx512f|avx2|sha_ni|aes' /proc/cpuinfo | sort -u | tr '\n' ' ')
+echo "== CPU REALE (letta dal sistema, niente valori fissi)"
+echo "modello:      $MODELLO"
+echo "sistema:      $SOCK socket x $CPS core x $TPC thread = $CORE_SIS core, $VCPU_TOT vCPU$( [ "$TPC" -gt 1 ] && echo '  (SMT/hyperthreading: 2 vCPU = 1 core)')"
+echo "test su:      $N vCPU [$AFF] = $CORE core reali$( [ -n "${MINIBENCH_AFFINITY:-}" ] && echo "  (affinity scelta: -c ${MINIBENCH_AFFINITY})")"
+echo "limite cgroup: $LIMITE$( [ "$LIMITE" != nessuno ] && echo ' CPU (container o servizio limitato: il multi-core non puo superarlo)')"
+echo "istruzioni:   ${FLAG:-nessuna rilevante}  hypervisor: $(systemd-detect-virt 2>/dev/null || echo n/d)"
+echo "RAM:          $(free -h | awk '/Mem/{print $2}')"
 LOAD=$(cut -d' ' -f1 /proc/loadavg); echo "load attuale: $(cut -d' ' -f1-3 /proc/loadavg)"
 
 echo; echo "== STEAL a riposo (20 s)"
@@ -98,7 +180,18 @@ read -r t1 s1 < <(stat_cpu)
 CN=$(openssl speed -seconds 5 -bytes 16384 -multi $N sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
 read -r t2 s2 < <(stat_cpu)
 ST1=$(pct $((s2-s1)) $((t2-t1)))
-echo "CPU tutti i core:     $CN GB/s"; echo "steal sotto carico:   $ST1 %"
+echo "CPU tutti i core:     $CN GB/s  ($N vCPU)"; echo "steal sotto carico:   $ST1 %"
+CC=""
+if [ "$TPC" -gt 1 ] && [ "$CORE" -lt "$N" ]; then
+  echo; echo "== CPU solo core reali ($CORE processi, 5 s): quanto rende l'SMT"
+  CC=$(openssl speed -seconds 5 -bytes 16384 -multi $CORE sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+  echo "CPU $CORE core:            $CC GB/s   -> con SMT ($N vCPU): $CN GB/s  ($(awk -v a="$CC" -v b="$CN" 'BEGIN{printf "%+.0f",(a>0?(b/a-1)*100:0)}') %)"
+fi
+# CPU concesse davvero: le vCPU, o meno se c'e' un limite cgroup
+NEFF=$(awk -v n="$N" -v l="$LIMITE" 'BEGIN{if(l!="nessuno" && l+0<n) printf "%.2f",l; else print n}')
+SCALA=$(awk -v c1="$C1" -v cn="$CN" -v n="$NEFF" 'BEGIN{printf "%.1f",(c1>0?cn/(c1*n)*100:0)}')
+echo "scala:                $SCALA %  (CPU tutti / (CPU 1 core x $NEFF CPU concesse): 100 % = ogni CPU vale un core pieno)"
+[ "$LIMITE" != nessuno ] && echo "  NOTA: limite cgroup $LIMITE CPU: il multi-core misura il LIMITE, non la macchina"
 
 echo; echo "== CONSISTENZA CPU (5 giri uguali, 1 core)"
 GIRI=""; for k in 1 2 3 4 5; do g=$(/usr/bin/env python3 -I -c "
@@ -138,17 +231,22 @@ case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo 
 
 # --- confronto con la media degli ultimi 5 test (indice %) e scrittura storico ---
 python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
-  "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" <<'PY'
+  "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
+  "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" <<'PY'
 import sys, os, csv
 log = sys.argv[1]
 COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
         "cpu1_GBs","cpu_tutti_GBs","disco_scrittura_GBs","disco_lettura_GBs","disco_4k_GBs",
         "giro_min_s","giro_max_s",
-        "steal_riposo_pct","steal_carico_pct","durata_s","clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu"]
+        "steal_riposo_pct","steal_carico_pct","durata_s","clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu",
+        "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
+        "vcpu_sistema","core_sistema","affinity"]
 # ordine degli argomenti passati da bash
 ARG = ["giorno_utc","ora_utc","offset_ita","verdetto","cpu1_GBs","cpu_tutti_GBs","giro_min_s","giro_max_s",
        "disco_scrittura_GBs","disco_lettura_GBs","disco_4k_GBs","steal_riposo_pct","steal_carico_pct","durata_s",
-       "clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu"]
+       "clocksource","ntp_sync","drift_raw_mono_s","load1","vcpu",
+       "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
+       "vcpu_sistema","core_sistema","affinity"]
 cur = dict(zip(ARG, sys.argv[2:]))
 # raggruppate per unita': prima GB/s, poi secondi, poi %
 # gruppo, metrica, colonna, modo: 'alto' = piu' alto meglio, 'basso' = piu' basso meglio, 'steal'
@@ -176,7 +274,13 @@ allarmi = []
 righe = []
 if os.path.exists(log) and os.path.getsize(log) > 0:
     with open(log, newline="") as fh: righe = list(csv.DictReader(fh))
-rif = righe[-N_RIF:]
+# solo test fatti con la stessa CPU e lo stesso numero di vCPU (righe vecchie senza modello: conta solo vcpu)
+stessa = [r for r in righe if r.get("vcpu") == cur["vcpu"] and r.get("cpu_modello", "") in ("", cur["cpu_modello"])
+          and r.get("limite_cgroup", "nessuno") in ("", cur["limite_cgroup"])
+          and r.get("affinity", "") in ("", cur["affinity"])]
+if len(stessa) < len(righe):
+    print(f"\nNOTA: {len(righe)-len(stessa)} test dello storico fatti con CPU, vCPU, affinity o limite diversi: esclusi dal confronto")
+rif = stessa[-N_RIF:]
 def media(col):
     v = [x for x in (f(r.get(col)) for r in rif) if x is not None]
     return sum(v) / len(v) if v else None

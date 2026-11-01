@@ -17,20 +17,84 @@ Mini benchmark per VPS Linux in circa 37 secondi. Misura se il provider ti sta t
 | `SINTESI.txt` | riassunto breve da mandare su WhatsApp o Telegram |
 | `LICENSE` | licenza MIT |
 | `.gitignore` | esclude lo storico locale `minibench.csv` |
-| `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026, 27 test), come esempio di formato e di valori |
+| `storico-esempio.csv` | storico vero del server di origine (1 novembre 2026, 28 test), come esempio di formato e di valori |
 
 ---
 
 ## Uso
 
 ```bash
-bash minibench.sh                  # storico in minibench.csv accanto allo script
+bash minibench.sh                  # tutte le vCPU, storico in minibench.csv accanto allo script
+bash minibench.sh -c 4             # solo le prime 4 vCPU (affinity)
+bash minibench.sh -c 0,2,4,6       # vCPU scelte a mano
 bash minibench.sh /percorso/altro.csv
 ```
 
 - Non modifica il sistema. Scrive un file temporaneo di 512 MB in `/tmp` e poi lo cancella.
 - Ogni lancio aggiunge una riga allo storico CSV.
-- Requisiti: `bash`, `python3`, `openssl`, `dd`, `awk`, `ps`, `timedatectl` (systemd).
+- Requisiti: `bash`, `python3`, `openssl`, `dd`, `awk`, `ps`, `lscpu`, `taskset`, `timedatectl` (systemd).
+
+---
+
+## CPU reale: niente valori scritti fissi
+
+Lo script non presume niente: legge dal sistema cosa c'è davvero e lo scrive.
+
+```
+== CPU REALE (letta dal sistema, niente valori fissi)
+modello:      AMD EPYC-Milan Processor
+sistema:      1 socket x 4 core x 2 thread = 4 core, 8 vCPU  (SMT/hyperthreading: 2 vCPU = 1 core)
+test su:      8 vCPU [0,1,2,3,4,5,6,7] = 4 core reali
+limite cgroup: nessuno
+istruzioni:   aes avx2 sha_ni   hypervisor: kvm
+```
+
+- **vCPU**: il test multi-core usa tutte le vCPU che trova (`nproc`), non un numero scritto nello script.
+- **Core e thread**: se c'è SMT (hyperthreading), fa anche un test con i soli core, per vedere quanto rendono i thread in più.
+- **Limite cgroup**: se lo lanci dentro un container o un servizio limitato (Docker `cpus`, systemd `CPUQuota`), se ne accorge. Lo scrive e calcola la scala sulle CPU concesse davvero.
+- **Scala** = CPU tutti / (CPU 1 core × CPU) × 100. Al 100 % ogni vCPU vale un core pieno; con SMT è normale stare tra il 55 e il 70 %.
+- **Confronto onesto**: la media usa solo test con stessa CPU, stesse vCPU, stessa affinity e stesso limite. Se cambi VPS lo storico vecchio non si mischia.
+
+---
+
+## Affinity spiegata semplice (`-c`)
+
+**Cos'è.** Dici al sistema: "questo programma può girare **solo** su queste vCPU". Senza `-c` il test usa tutte le vCPU; con `-c` lo chiudi in un recinto.
+
+**Perché serve:**
+
+1. **Vedere come cresce la potenza.** Prova `-c 1`, `-c 2`, `-c 4`, `-c 8`. Se raddoppiando le vCPU la "CPU tutti i core" non raddoppia, le vCPU in più valgono meno di quanto sembra.
+2. **Scoprire l'SMT (hyperthreading).** Due vCPU sullo stesso core si dividono lo stesso core fisico, quindi rendono meno di due core veri.
+   - `-c 0,1`: 2 vCPU sullo **stesso** core (secondo la VM)
+   - `-c 0,2`: 2 vCPU su core **diversi**
+   - se `0,2` va molto più forte di `0,1`, l'SMT è vero;
+   - se vanno uguali, la topologia mostrata dalla VM è finta: la decide l'hypervisor, e sotto le vCPU stanno dove vuole il provider.
+3. **Simulare una macchina più piccola.** `-c 2` vuol dire "come andrebbe con 2 vCPU".
+4. **Trovare una vCPU lenta.** Prova una vCPU alla volta: `-c 0`, poi la lista `-c 3`, poi `-c 7`…
+
+**Esempi:**
+
+| Comando | Su quali vCPU gira |
+|---|---|
+| `minibench.sh -c 1` | solo la vCPU 0 |
+| `minibench.sh -c 4` | le prime 4: 0, 1, 2, 3 |
+| `minibench.sh -c 0,2,4,6` | 4 vCPU, una per core |
+| `minibench.sh -c 4-7` | dalla 4 alla 7 |
+
+**Da sapere:**
+
+- Un numero semplice (`-c 4`) vuol dire le **prime** N vCPU. Per sceglierle una per una si usa la lista.
+- `lscpu -e` mostra quali vCPU stanno sullo stesso core: hanno lo stesso valore nella colonna `CORE`.
+- Lo storico confronta solo test con la **stessa** affinity: un test con `-c 4` non viene mischiato con quelli su tutte le vCPU.
+
+**Cosa abbiamo trovato sul server di origine** (1 novembre 2026, un test solo, da ripetere):
+
+| Affinity | Secondo la VM | CPU tutti |
+|---|---|---|
+| `-c 0-3` | 2 core × 2 thread (SMT) | 3,97 GB/s |
+| `-c 0,2,4,6` | 4 core diversi | 3,29 GB/s |
+
+Le vCPU che per la VM sono "SMT" sono andate **più forte** dei core "diversi": la topologia dichiarata dalla VM non corrisponde all'hardware vero.
 
 ---
 
@@ -124,8 +188,14 @@ giorno_utc, ora_utc, offset_ita, verdetto, indice_pct,
 cpu1_GBs, cpu_tutti_GBs, disco_scrittura_GBs, disco_lettura_GBs, disco_4k_GBs,
 giro_min_s, giro_max_s,
 steal_riposo_pct, steal_carico_pct,
-durata_s, clocksource, ntp_sync, drift_raw_mono_s, load1, vcpu
+durata_s, clocksource, ntp_sync, drift_raw_mono_s, load1, vcpu,
+cpu_core_GBs, scala_pct, cpu_modello, core, thread_per_core, limite_cgroup,
+vcpu_sistema, core_sistema, affinity
 ```
+
+- `vcpu` e `core`: quelli **usati dal test** (dipendono da `-c`).
+- `vcpu_sistema` e `core_sistema`: quelli della macchina.
+- `affinity`: l'elenco esatto delle vCPU usate.
 
 ---
 
@@ -147,7 +217,8 @@ steal 0/0 % · CPU 1 core ~1,06 GB/s · 8 core 5,5–7,0 GB/s · giri 1,4–1,6 
 Lo script è nato per uso interno. Prima di proporlo come strumento generico vanno sistemati questi punti:
 
 - [ ] **Riferimenti personali nei commenti:** da rendere generici.
-- [ ] **Valori di riferimento fissi** (8 vCPU EPYC): vanno spostati in un file a parte o ricavati dallo storico della macchina.
+- [x] **CPU e vCPU lette dal sistema** (`lscpu`, `nproc`, affinity, limite cgroup), non più scritte fisse nello script.
+- [ ] **Valori di riferimento** del server di origine nei commenti: vanno spostati in un file a parte o ricavati dallo storico della macchina.
 - [ ] **Fuso orario fisso** `Europe/Rome` nella colonna `offset_ita`: va reso configurabile o tolto, l'UTC basta.
 - [ ] **Solo italiano:** testi e colonne. Valutare una versione in inglese o una variabile per la lingua.
 - [ ] **Dipendenze non controllate:** se manca `openssl`, `python3` o `timedatectl` lo script dà valori vuoti invece di un errore chiaro. Serve un controllo iniziale.
