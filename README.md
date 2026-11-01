@@ -405,7 +405,7 @@ steal 0/0 % · CPU 1 core ~1,06 GB/s · 8 core 5,5–7,0 GB/s · giri 1,4–1,6 
 
 Lo script è nato per uso interno. Prima di proporlo come strumento generico vanno sistemati questi punti:
 
-- [ ] **Riferimenti personali nei commenti:** da rendere generici.
+- [x] **Riferimenti personali nei commenti:** tolti, resi generici.
 - [x] **CPU e vCPU lette dal sistema** (`lscpu`, `nproc`, affinity, limite cgroup), non più scritte fisse nello script.
 - [ ] **Valori di riferimento** del server di origine nei commenti: vanno spostati in un file a parte o ricavati dallo storico della macchina.
 - [ ] **Fuso orario fisso** `Europe/Rome` nella colonna `offset_ita`: va reso configurabile o tolto, l'UTC basta.
