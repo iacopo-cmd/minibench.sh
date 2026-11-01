@@ -1,7 +1,17 @@
 #!/bin/bash
 # minibench - mini benchmark VPS: steal time, CPU single/multi, consistenza, disco.
 # ATTENZIONE: nato su un server preciso (VPS) - DA AGGIUSTARE PER IL WEB, vedi README.md
-# Non modifica il sistema. Durata ~45 s, ~55 s con il disco (-D) (moltiplicata per N con -x N).
+# Non modifica il sistema. Durata ~20 s, ~25 s con il disco (-D). -x N moltiplica tutto.
+#
+# SCHEMA 2 (dal 2026-11-01 ~08:45): default VELOCE, la precisione si sceglie con -x.
+#   Unita' base (-x 1): steal 5 s, CPU 1 core 1 s, istruzioni 1 s l'una, multi-core 1 s,
+#   solo core 1 s, 3 giri CPU, disco (solo -D/-d) 1 passata + 1 s di 4k random.
+#   -x 3 ~ vecchio default (60 s), -x 10 = alta precisione (~3 min).
+#   Non tutto a 1 giro: steal su 2 s e' casuale (il provider ruba a raffiche), 1 solo
+#   giro non mostra la consistenza, e misure troppo corte fanno scattare allarmi a vuoto.
+#   Lo schema e' nel CSV (colonna schema): si confrontano solo test dello stesso schema.
+#   Disco fuori dal default per NON consumarlo: ogni test disco scrive 512 MB (x N con -x).
+#   Gli agenti AI usano il default e scelgono loro -x quando serve.
 # Storico: ogni lancio aggiunge una riga a minibench.csv ACCANTO ALLO SCRIPT
 # (stessa cartella del .sh).
 # Uso:  minibench.sh [opzioni] [file.csv]      (minibench.sh -h = aiuto)
@@ -262,13 +272,13 @@ if [ "$CONT" != none ] || [ "$LIMITE" != nessuno ]; then
 fi
 LOAD=$(cut -d' ' -f1 /proc/loadavg); echo "load attuale: $(cut -d' ' -f1-3 /proc/loadavg)"
 
-(( X > 1 )) && { echo; echo "== TEST LUNGO x$X: tempi, giri e passate disco moltiplicati per $X (~$((45 * X / 60)) min)"; }
-echo; echo "== STEAL a riposo ($((20 * X)) s)"
-read -r t1 s1 < <(stat_cpu); sleep $((20 * X)); read -r t2 s2 < <(stat_cpu)
+(( X > 1 )) && { echo; echo "== TEST LUNGO x$X: tempi, giri e passate disco moltiplicati per $X (~$((20 * X)) s)"; }
+echo; echo "== STEAL a riposo ($((5 * X)) s)"
+read -r t1 s1 < <(stat_cpu); sleep $((5 * X)); read -r t2 s2 < <(stat_cpu)
 ST0=$(pct $((s2-s1)) $((t2-t1))); echo "steal a riposo:       $ST0 %"
 
-echo; echo "== CPU 1 core (openssl sha256, $((3 * X)) s)"
-C1=$(openssl speed -seconds $((3 * X)) -bytes 16384 sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+echo; echo "== CPU 1 core (openssl sha256, $((1 * X)) s)"
+C1=$(openssl speed -seconds $((1 * X)) -bytes 16384 sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
 echo "CPU 1 core:           $C1 GB/s"
 
 # Stesse prove su 1 core, per CPU vecchie e nuove, Intel e AMD:
@@ -278,26 +288,26 @@ echo "CPU 1 core:           $C1 GB/s"
 #  AES   = aes-128-gcm nativo (AES-NI, VAES+VPCLMULQDQ sulle ultime)
 #  vett  = chacha20-poly1305 nativo (SSE / AVX2 / AVX-512: la piu' larga disponibile)
 ossl(){ awk 'NF{l=$0} END{n=split(l,a," "); v=a[n]; sub(/k$/,"",v); printf "%.2f", v/1e6}'; }
-echo; echo "== ISTRUZIONI CPU (1 core, $((3 * X)) s ciascuna)"
-CB=$(OPENSSL_ia32cap=0:0 openssl speed -seconds $((3 * X)) -bytes 16384 sha256 2>/dev/null | ossl)
-CA=$(openssl speed -seconds $((3 * X)) -bytes 16384 -evp aes-128-gcm 2>/dev/null | ossl)
-CV=$(openssl speed -seconds $((3 * X)) -bytes 16384 -evp chacha20-poly1305 2>/dev/null | ossl)
+echo; echo "== ISTRUZIONI CPU (1 core, $((1 * X)) s ciascuna)"
+CB=$(OPENSSL_ia32cap=0:0 openssl speed -seconds $((1 * X)) -bytes 16384 sha256 2>/dev/null | ossl)
+CA=$(openssl speed -seconds $((1 * X)) -bytes 16384 -evp aes-128-gcm 2>/dev/null | ossl)
+CV=$(openssl speed -seconds $((1 * X)) -bytes 16384 -evp chacha20-poly1305 2>/dev/null | ossl)
 per(){ awk -v a="$1" -v b="$2" 'BEGIN{printf "%.1f", (b>0 ? a/b : 0)}'; }
 echo "base (nessuna estensione): $CB GB/s   <- confrontabile fra CPU diverse"
 echo "SHA  ($(ha sha_ni && echo SHA-NI || echo 'software, niente SHA-NI')):  $C1 GB/s   x$(per "$C1" "$CB") rispetto alla base"
 echo "AES  ($(ha vaes vpclmulqdq && echo 'AES-NI + VAES' || { ha aes && echo AES-NI || echo 'software, niente AES-NI'; })):  $CA GB/s"
 echo "vett ($VETT):  $CV GB/s"
 
-echo; echo "== CPU tutti i core ($N processi, $((5 * X)) s) + steal sotto carico"
+echo; echo "== CPU tutti i core ($N processi, $((1 * X)) s) + steal sotto carico"
 read -r t1 s1 < <(stat_cpu)
-CN=$(openssl speed -seconds $((5 * X)) -bytes 16384 -multi $N sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+CN=$(openssl speed -seconds $((1 * X)) -bytes 16384 -multi $N sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
 read -r t2 s2 < <(stat_cpu)
 ST1=$(pct $((s2-s1)) $((t2-t1)))
 echo "CPU tutti i core:     $CN GB/s  ($N vCPU)"; echo "steal sotto carico:   $ST1 %"
 CC=""
 if [ "$TPC" -gt 1 ] && [ "$CORE" -lt "$N" ]; then
-  echo; echo "== CPU solo core reali ($CORE processi, $((5 * X)) s): quanto rende l'SMT"
-  CC=$(openssl speed -seconds $((5 * X)) -bytes 16384 -multi $CORE sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+  echo; echo "== CPU solo core reali ($CORE processi, $((1 * X)) s): quanto rende l'SMT"
+  CC=$(openssl speed -seconds $((1 * X)) -bytes 16384 -multi $CORE sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
   echo "CPU $CORE core:            $CC GB/s   -> con SMT ($N vCPU): $CN GB/s  ($(awk -v a="$CC" -v b="$CN" 'BEGIN{printf "%+.0f",(a>0?(b/a-1)*100:0)}') %)"
 fi
 # CPU concesse davvero: le vCPU, o meno se c'e' un limite cgroup
@@ -306,8 +316,8 @@ SCALA=$(awk -v c1="$C1" -v cn="$CN" -v n="$NEFF" 'BEGIN{printf "%.1f",(c1>0?cn/(
 echo "scala:                $SCALA %  (CPU tutti / (CPU 1 core x $NEFF CPU concesse): 100 % = ogni CPU vale un core pieno)"
 [ "$LIMITE" != nessuno ] && echo "  NOTA: limite cgroup $LIMITE CPU: il multi-core misura il LIMITE, non la macchina"
 
-echo; echo "== CONSISTENZA CPU ($((5 * X)) giri uguali, 1 core)"
-GIRI=""; for k in $(seq 1 $((5 * X))); do g=$(/usr/bin/env python3 -I -c "
+echo; echo "== CONSISTENZA CPU ($((3 * X)) giri uguali, 1 core)"
+GIRI=""; for k in $(seq 1 $((3 * X))); do g=$(/usr/bin/env python3 -I -c "
 import time;t=time.perf_counter();x=0
 for i in range(6_000_000): x+=i*i
 print(f'{time.perf_counter()-t:.3f}')"); echo "giro $k: $g s"; GIRI="$GIRI $g"; done
@@ -322,7 +332,7 @@ if (( DISCO )); then
   for k in $(seq 1 $X); do
     LW="$LW $(dd if=/dev/zero of="$F" bs=1M count=512 oflag=direct conv=fsync 2>&1 | dd_gbs)"
     LR="$LR $(dd if="$F" of=/dev/null bs=1M iflag=direct 2>&1 | dd_gbs)"
-    L4="$L4 $(rand4k "$F" 3)"
+    L4="$L4 $(rand4k "$F" 1)"
   done
   DW=$(echo $LW | mediana); DR=$(echo $LR | mediana); D4=$(echo $L4 | mediana)
   D4MB=$(awk -v i="$D4" 'BEGIN{printf "%.1f", i*4096/1e6}')
@@ -364,7 +374,7 @@ case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo 
 python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
   "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
   "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" "$X" "$DISKFS" "$DISKDIR" \
-  "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" "$NOLOG" "$SINTESI" <<'PY'
+  "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" 2 "$NOLOG" "$SINTESI" <<'PY'
 import sys, os, csv
 log = sys.argv[1]
 COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
@@ -374,7 +384,7 @@ COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
         "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
         "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir",
         "disco_4k_iops","openssl_ver","python_ver","container",
-        "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag"]
+        "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag","schema"]
 # ordine degli argomenti passati da bash
 ARG = ["giorno_utc","ora_utc","offset_ita","verdetto","cpu1_GBs","cpu_tutti_GBs","giro_min_s","giro_max_s",
        "disco_scrittura_GBs","disco_lettura_GBs","disco_4k_GBs","steal_riposo_pct","steal_carico_pct","durata_s",
@@ -382,7 +392,7 @@ ARG = ["giorno_utc","ora_utc","offset_ita","verdetto","cpu1_GBs","cpu_tutti_GBs"
        "cpu_core_GBs","scala_pct","cpu_modello","core","thread_per_core","limite_cgroup",
        "vcpu_sistema","core_sistema","affinity","x","disco_fs","disco_dir",
        "openssl_ver","python_ver","container",
-       "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag"]
+       "cpu1_base_GBs","aes_GBs","vett_GBs","x86_livello","cpu_flag","schema"]
 cur = dict(zip(ARG, sys.argv[2:2+len(ARG)]))
 # disco_4k: ora e' 4k RANDOM in IOPS (colonna nuova); la vecchia disco_4k_GBs (sequenziale, sbagliata) resta vuota
 cur["disco_4k_iops"] = cur.pop("disco_4k_GBs"); cur["disco_4k_GBs"] = ""
@@ -418,10 +428,11 @@ stessa = [r for r in righe if r.get("vcpu") == cur["vcpu"] and r.get("cpu_modell
           and r.get("limite_cgroup", "nessuno") in ("", cur["limite_cgroup"])
           and r.get("affinity", "") in ("", cur["affinity"])
           and (r.get("x") or "1") == cur["x"]
+          and (r.get("schema") or "1") == cur["schema"]
           and r.get("openssl_ver", "") in ("", cur["openssl_ver"])
           and r.get("python_ver", "") in ("", cur["python_ver"])]
 if len(stessa) < len(righe):
-    print(f"\nNOTA: {len(righe)-len(stessa)} test dello storico non confrontabili (CPU, vCPU, affinity, limite, -x o versioni openssl/python): esclusi")
+    print(f"\nNOTA: {len(righe)-len(stessa)} test dello storico non confrontabili (CPU, vCPU, affinity, limite, -x, schema o versioni openssl/python): esclusi")
 rif = stessa[-N_RIF:]
 # disco: solo test che l'hanno misurato, sullo stesso tipo di filesystem, col 4k random nuovo
 rif_disco = [r for r in stessa if r.get("disco_4k_iops") and r.get("disco_fs") == cur["disco_fs"]][-N_RIF:]

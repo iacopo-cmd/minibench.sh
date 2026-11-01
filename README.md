@@ -1,6 +1,6 @@
 # minibench
 
-Mini benchmark per VPS Linux in circa 50 secondi (60 con il disco). Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
+Mini benchmark per VPS Linux in circa 20 secondi (25 con il disco, che di default non si fa). Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
 
 > ⚠️ **DA AGGIUSTARE PER IL WEB**
 > Lo script è nato e tarato su **un server preciso**: VPS con 8 vCPU EPYC e Debian 13.
@@ -27,7 +27,8 @@ Mini benchmark per VPS Linux in circa 50 secondi (60 con il disco). Misura se il
 bash minibench.sh                  # tutte le vCPU, storico in minibench.csv accanto allo script
 bash minibench.sh -h               # aiuto
 bash minibench.sh -c 4             # solo le prime 4 vCPU (affinity)
-bash minibench.sh -x 23            # test lungo: tutto x23 (~17 minuti)
+bash minibench.sh -x 3             # precisione come il vecchio default (~1 min)
+bash minibench.sh -x 23            # alta precisione: tutto x23 (~8 minuti)
 bash minibench.sh -t               # solo riassunto breve per Telegram/WhatsApp
 bash minibench.sh -t -n            # riassunto, senza scrivere nello storico
 bash minibench.sh -D                # anche il test disco, nella cartella dello script
@@ -262,7 +263,8 @@ steal_riposo_pct, steal_carico_pct,
 durata_s, clocksource, ntp_sync, drift_raw_mono_s, load1, vcpu,
 cpu_core_GBs, scala_pct, cpu_modello, core, thread_per_core, limite_cgroup,
 vcpu_sistema, core_sistema, affinity, x, disco_fs, disco_dir,
-disco_4k_iops, openssl_ver, python_ver, container
+disco_4k_iops, openssl_ver, python_ver, container,
+cpu1_base_GBs, aes_GBs, vett_GBs, x86_livello, cpu_flag, schema
 ```
 
 - `x`: il moltiplicatore di `-x` (1 = test normale).
@@ -271,6 +273,35 @@ disco_4k_iops, openssl_ver, python_ver, container
 - `vcpu` e `core`: quelli **usati dal test** (dipendono da `-c`).
 - `vcpu_sistema` e `core_sistema`: quelli della macchina.
 - `affinity`: l'elenco esatto delle vCPU usate.
+
+---
+
+## Cambio del 1° novembre 2026: default veloce (schema 2)
+
+**Cosa:** il test di default dura circa **20 secondi** invece di 50. La precisione la sceglie chi lo lancia, con `-x`.
+
+| Prova | Prima | Ora (`-x 1`) |
+|---|---|---|
+| steal a riposo | 20 s | 5 s |
+| CPU 1 core, istruzioni (base, AES, vett) | 3 s ciascuna | 1 s ciascuna |
+| CPU tutti i core, solo core | 5 s ciascuna | 1 s ciascuna |
+| giri CPU | 5 | 3 |
+| disco | ogni volta | **solo con `-D` o `-d DIR`**, 1 passata + 1 s di 4k random |
+| **totale** | ~50 s | **~20 s** (~25 s con il disco) |
+
+`-x 3` vale circa il vecchio default (~50–60 s), `-x 10` è alta precisione (~3 min).
+
+**Perché:**
+- **Gli agenti AI** possono lanciarlo spesso senza occupare la macchina, e scelgono loro `-x` quando serve.
+- **Salvare i dischi:** ogni test disco scrive 512 MB (per N con `-x`). Di default il disco non si tocca.
+- **Precisione su richiesta:** chi vuole numeri più stabili usa `-x`.
+
+**Perché non tutto a un giro solo:** è stato valutato e scartato.
+- Lo steal misurato su 2 s è casuale, perché il provider ruba CPU a raffiche.
+- Con un giro solo il giro più veloce e il più lento coincidono, e la consistenza non si vede più.
+- Misure troppo corte fanno scattare gli allarmi a vuoto.
+
+**Storico:** nel CSV c'è la colonna `schema`: 1 per i test vecchi, 2 per quelli nuovi. Si confrontano solo test dello stesso schema e con lo stesso `-x`.
 
 ---
 
