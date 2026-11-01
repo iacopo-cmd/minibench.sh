@@ -1,6 +1,6 @@
 # minibench
 
-Mini benchmark per VPS Linux in circa 45 secondi. Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
+Mini benchmark per VPS Linux in circa 50 secondi (60 con il disco). Misura se il provider ti sta togliendo CPU (steal time), quanto vanno CPU e disco, e confronta ogni test con la media dei 5 test precedenti.
 
 > ⚠️ **DA AGGIUSTARE PER IL WEB**
 > Lo script è nato e tarato su **un server preciso**: VPS con 8 vCPU EPYC e Debian 13.
@@ -30,7 +30,8 @@ bash minibench.sh -c 4             # solo le prime 4 vCPU (affinity)
 bash minibench.sh -x 23            # test lungo: tutto x23 (~17 minuti)
 bash minibench.sh -t               # solo riassunto breve per Telegram/WhatsApp
 bash minibench.sh -t -n            # riassunto, senza scrivere nello storico
-bash minibench.sh -d /data         # test disco in /data
+bash minibench.sh -D                # anche il test disco, nella cartella dello script
+bash minibench.sh -d /data         # anche il test disco, in /data
 bash minibench.sh /percorso/altro.csv
 ```
 
@@ -38,7 +39,8 @@ bash minibench.sh /percorso/altro.csv
 |---|---|
 | `-c N` o `-c lista` | affinity: solo le prime N vCPU, o quelle elencate (`0,2,4,6`, `4-7`) |
 | `-x N` | test lungo: secondi di misura, giri CPU e passate disco moltiplicati per N; sul disco si tiene la mediana delle passate |
-| `-d DIR` | cartella dove fare il test disco. Default: quella dello script |
+| `-D` | fa **anche** il test disco, nella cartella dello script. **Di default il disco non si fa** |
+| `-d DIR` | fa **anche** il test disco, nella cartella DIR |
 | `-t` | stampa solo un riassunto di 5–8 righe, pronto da mandare in chat |
 | `-n` | non scrive nello storico (prova al volo) |
 | `-h` | aiuto |
@@ -84,6 +86,32 @@ istruzioni:   aes avx2 sha_ni   hypervisor: kvm
 - **Limite cgroup**: se lo lanci dentro un container o un servizio limitato (Docker `cpus`, systemd `CPUQuota`), se ne accorge. Lo scrive e calcola la scala sulle CPU concesse davvero.
 - **Scala** = CPU tutti / (CPU 1 core × CPU) × 100. Al 100 % ogni vCPU vale un core pieno; con SMT è normale stare tra il 55 e il 70 %.
 - **Confronto onesto**: la media usa solo test con stessa CPU, stesse vCPU, stessa affinity e stesso limite. Se cambi VPS lo storico vecchio non si mischia.
+
+---
+
+## CPU vecchie e nuove, Intel e AMD
+
+Le estensioni hanno gli stessi nomi su Intel e AMD, e lo script le tratta allo stesso modo.
+
+```
+livello:      x86-64-v3  (v1 = CPU vecchie, v2 ~2009, v3 = AVX2 ~2015, v4 = AVX-512)
+istruzioni:   sse4_2 aes sha_ni avx avx2 vaes vpclmulqdq
+mancano:      avx512f avx512_vnni avx_vnni gfni amx_tile
+== ISTRUZIONI CPU (1 core, 3 s ciascuna)
+base (nessuna estensione): 0.15 GB/s   <- confrontabile fra CPU diverse
+SHA  (SHA-NI):  1.05 GB/s   x7.0 rispetto alla base
+AES  (AES-NI + VAES):  1.77 GB/s
+vett (AVX2):  1.30 GB/s
+```
+
+| Prova | Cosa usa | A cosa serve |
+|---|---|---|
+| **base** | sha256 con OpenSSL costretto a **non** usare estensioni (`OPENSSL_ia32cap=0:0`) | stesso codice su ogni CPU x86: è l'unico numero da confrontare fra macchine diverse |
+| **SHA** | sha256 nativo: SHA-NI se c'è | quanto rendono le estensioni ("x7" qui) |
+| **AES** | AES-128-GCM nativo: AES-NI, oppure VAES + VPCLMULQDQ sulle ultime | cifratura (TLS, VPN, dischi cifrati) |
+| **vett** | ChaCha20-Poly1305 nativo: SSE, AVX2 o AVX-512, la più larga che c'è | calcolo vettoriale |
+
+Su una CPU vecchia senza un'estensione la prova gira lo stesso, in software: niente errori, solo numeri più bassi. Il **livello x86-64** riassume tutto in una parola: v1 per le CPU vecchie, v2 dal 2009 circa (SSE4.2), v3 con AVX2 dal 2015 circa (Haswell, Zen), v4 con AVX-512 (Xeon Skylake-SP e successivi, Zen 4).
 
 ---
 
@@ -150,7 +178,8 @@ Le vCPU che per la VM sono "SMT" sono andate **più forte** dei core "diversi": 
 | Steal sotto carico | steal mentre tutti i core lavorano | % | basso |
 | Consistenza CPU | 5 giri uguali in Python: il più veloce e il più lento | s | basso |
 | Disco scrittura / lettura | `dd` 512 MB, diretto senza cache | GB/s | alto |
-| Disco 4k random | letture da 4 KB in punti casuali, O_DIRECT, una alla volta, per 3 s | IOPS | alto |
+| Istruzioni CPU | sha256 **base** senza estensioni (`OPENSSL_ia32cap=0:0`), AES-128-GCM, ChaCha20-Poly1305, 3 s ciascuna | GB/s | alto |
+| Disco 4k random (solo `-D`/`-d`) | letture da 4 KB in punti casuali, O_DIRECT, una alla volta, per 3 s | IOPS | alto |
 | Orologio | clocksource, NTP, drift RAW−MONOTONIC | — | drift ≈ 0 |
 
 ---
