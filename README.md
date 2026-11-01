@@ -44,6 +44,7 @@ bash minibench.sh /percorso/altro.csv
 | `-d DIR` | fa **anche** il test disco, nella cartella DIR |
 | `-t` | stampa solo un riassunto di 5–8 righe, pronto da mandare in chat |
 | `-n` | non scrive nello storico (prova al volo) |
+| `-A` | archivia: sposta le righe vecchie dello storico in `minibench-archivio-DATA.csv.gz`, accanto allo storico, e tiene le ultime 1.000. Non fa il test e non cancella niente |
 | `-h` | aiuto |
 
 Esempio di `-t` (fatto per il telefono: un dato per riga, righe corte, virgola decimale):
@@ -68,6 +69,7 @@ Disco: non misurato
 - **Test lunghi a parte.** Lo storico confronta solo test con lo stesso `-x`: un test x23 non si mischia con quelli normali.
 - Non modifica il sistema. Scrive un file temporaneo di 512 MB nella cartella del test disco e poi lo cancella.
 - Ogni lancio aggiunge una riga allo storico CSV (tranne con `-n`).
+- **Storico grande:** quando supera 1 MB (circa 2.500 test), ogni test **propone** di archiviare, anche nel riassunto `-t` (`📦 Storico grande … Proposta: archiviare con -A`), ma non lo fa da solo. Soglie cambiabili con `MINIBENCH_CSV_KB` e `MINIBENCH_TIENI`.
 
 ### ⚠️ Attenzione a `/tmp`: spesso è in RAM
 

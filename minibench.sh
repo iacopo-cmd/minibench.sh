@@ -33,6 +33,9 @@
 #               Se e' tmpfs (RAM) lo segnala: misureresti la RAM, non il disco
 #   -t          solo riassunto breve per Telegram/WhatsApp (5-8 righe)
 #   -n          non scrive nello storico (prova al volo)
+#   -A          archivia: sposta le righe vecchie dello storico in minibench-archivio-DATA.csv.gz
+#               (accanto allo storico) e tiene le ultime 1000. Non fa il test. Non cancella niente.
+#               Quando lo storico supera 1 MB (~2500 test) ogni test lo PROPONE, non lo fa da solo.
 #   -h          aiuto
 # Esempi: minibench.sh -c 4   |   minibench.sh -D   |   minibench.sh -x 23   |   minibench.sh -t -n
 # Due test insieme si falsano: un blocco (flock) fa aspettare il secondo.
@@ -179,10 +182,12 @@ export LC_ALL=C
 aiuto(){ sed -n '/^# Uso:/,/^# Due test/p' "$0" | sed 's/^# \{0,1\}//'; }
 ORIG=("$@")
 SCELTA=""; X=1; DISKDIR=""; TG=0; NOLOG=0
-DISCO=0; XSET=0
+DISCO=0; XSET=0; ARCHIVIA=0
+CSV_KB=${MINIBENCH_CSV_KB:-1024}    # oltre questa dimensione lo storico propone il taglio
+TIENI=${MINIBENCH_TIENI:-1000}      # righe che -A lascia nello storico
 CONFERMA=${MINIBENCH_CONFERMA:-0}   # 1 = questo e' il test lungo di conferma di un possibile allarme
-while getopts "c:x:d:Dtnh" o; do case $o in
-  c) SCELTA=$OPTARG;; x) X=$OPTARG; XSET=1;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;;
+while getopts "c:x:d:DtnAh" o; do case $o in
+  c) SCELTA=$OPTARG;; x) X=$OPTARG; XSET=1;; d) DISKDIR=$OPTARG; DISCO=1;; D) DISCO=1;; t) TG=1;; n) NOLOG=1;; A) ARCHIVIA=1;;
   h) aiuto; exit 0;; *) aiuto; exit 2;; esac; done
 shift $((OPTIND-1))
 [[ "$X" =~ ^[0-9]+$ ]] && (( X >= 1 && X <= 1000 )) || { echo "-x $X: serve un numero da 1 a 1000"; exit 2; }
@@ -215,6 +220,29 @@ N=$(nproc); DIR=$(dirname "$(readlink -f "$0")"); LOG="${1:-${DIR%/}/minibench.c
 LOCKDIR=$(dirname "$LOG"); [ -w "$LOCKDIR" ] || LOCKDIR=${XDG_RUNTIME_DIR:-$HOME}
 exec 9>"$LOCKDIR/.minibench.lock"
 if ! flock -n 9; then echo "Un altro minibench sta girando: aspetto che finisca..." >&2; flock 9; fi
+# --- -A: archivia le righe vecchie dello storico e basta (niente test)
+if (( ARCHIVIA )); then
+  [ -s "$LOG" ] || { echo "storico $LOG vuoto o inesistente: niente da archiviare"; exit 0; }
+  python3 -I - "$LOG" "$TIENI" <<'ARCH'
+import sys, csv, gzip, os, time
+log, tieni = sys.argv[1], int(sys.argv[2])
+with open(log, newline="") as fh:
+    r = csv.reader(fh); hdr = next(r); righe = list(r)
+if len(righe) <= tieni:
+    print(f"storico: {len(righe)} test, non oltre {tieni}: niente da archiviare"); sys.exit(0)
+vecchie, nuove = righe[:-tieni], righe[-tieni:]
+arch = os.path.join(os.path.dirname(os.path.abspath(log)), f"minibench-archivio-{time.strftime('%Y%m%d-%H%M%S')}.csv.gz")
+with gzip.open(arch, "wt", newline="") as g:
+    w = csv.writer(g); w.writerow(hdr); w.writerows(vecchie)
+tmp = log + ".nuovo"
+with open(tmp, "w", newline="") as fh:
+    w = csv.writer(fh); w.writerow(hdr); w.writerows(nuove)
+os.replace(tmp, log)
+print(f"archiviati {len(vecchie)} test vecchi in {arch}")
+print(f"storico {log}: restano gli ultimi {len(nuove)} test ({os.path.getsize(log)//1024} KB)")
+ARCH
+  exit $?
+fi
 DISKFS=""; DW=""; DR=""; D4=""
 if (( DISCO )); then
   DISKDIR=${DISKDIR:-$DIR}
@@ -399,7 +427,7 @@ echo; echo "== VERDETTO STEAL"
 case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo "ATTENZIONE: host condiviso sotto carico (steal 1-5%)";; *) echo "MALE: VPS su host stracarico (steal > 5%)";; esac
 
 # --- confronto con la media degli ultimi 5 test (indice %) e scrittura storico ---
-MB_XSET=$XSET python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
+MB_XSET=$XSET MB_CSV_KB=$CSV_KB MB_TIENI=$TIENI python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
   "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
   "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" "$X" "$DISKFS" "$DISKDIR" \
   "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" 3 "$CONFERMA" "$NOLOG" "$SINTESI" <<'PY'
@@ -514,6 +542,12 @@ if st1 is not None and st1 >= SOGLIA_STEAL_CARICO:
     allarmi.append(f"STEAL SOTTO CARICO {st1:.2f} % (SOGLIA {SOGLIA_STEAL_CARICO:.0f} %)"); brevi.append(f"steal sotto carico: {st1:.1f} %")
 if st0 is not None and st0 >= SOGLIA_STEAL_RIPOSO:
     allarmi.append(f"STEAL A RIPOSO {st0:.2f} % (SOGLIA {SOGLIA_STEAL_RIPOSO:.0f} %)"); brevi.append(f"steal a riposo: {st0:.1f} %")
+# storico troppo grande? si PROPONE il taglio (-A), non si fa da solo
+proposta = ""
+if os.path.exists(log):
+    kb = os.path.getsize(log) // 1024
+    if kb > int(os.environ.get("MB_CSV_KB", "1024")):
+        proposta = f"storico {kb} KB ({len(righe)} test): proposta di archiviare le righe vecchie con -A"
 DA_CONFERMARE = allarmi and cur["x"] == "1" and cur["conferma"] != "1" and os.environ.get("MB_XSET") == "0"
 if DA_CONFERMARE:
     print("\n" + "?" * 70)
@@ -563,10 +597,13 @@ if SINTESI:
         s.append("✅ allarme non confermato: era rumore")
     else:
         s.append("✅ nessun allarme")
+    if proposta: s += ["", "📦 Storico grande: " + str(os.path.getsize(log)//1024) + " KB", "Proposta: archiviare con -A"]
     open(SINTESI, "w").write("\n".join(s) + "\n")
 
 if NOLOG:
-    print("storico: NON scritto (-n)"); sys.exit(0)
+    print("storico: NON scritto (-n)")
+    if proposta: print(f"\n📦 PROPOSTA: {proposta}.")
+    sys.exit(0)
 nuovo = not righe
 if righe and list(righe[0].keys()) != COLS:
     print(f"ATTENZIONE: intestazione di {log} diversa dal formato attuale, riga non aggiunta"); sys.exit(0)
@@ -575,6 +612,9 @@ with open(log, "a", newline="") as fh:
     if nuovo: w.writeheader()
     w.writerow(cur)
 print(f"storico: riga aggiunta a {log} ({len(righe)+1} test)")
+if proposta:
+    print(f"\n📦 PROPOSTA: {proposta}.")
+    print(f"   minibench.sh -A  sposta le righe vecchie in minibench-archivio-DATA.csv.gz e tiene le ultime {os.environ.get('MB_TIENI','1000')}.")
 PY
 RC=$?
 if [ "$RC" = 10 ]; then

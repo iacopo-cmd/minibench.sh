@@ -1,2 +1,3 @@
-# storico locale creato lanciando lo script dal repo (quello di esempio e' storico-esempio.csv)
 minibench.csv
+.minibench.lock
+minibench-archivio-*.csv.gz
