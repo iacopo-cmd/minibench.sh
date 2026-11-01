@@ -284,7 +284,7 @@ cpu1_base_GBs, aes_GBs, vett_GBs, x86_livello, cpu_flag, schema
 |---|---|---|
 | steal a riposo | 20 s | 5 s |
 | CPU 1 core, istruzioni (base, AES, vett) | 3 s ciascuna | 1 s ciascuna |
-| CPU tutti i core, solo core | 5 s ciascuna | 1 s ciascuna |
+| CPU tutti i core, solo core | 5 s ciascuna | **3 s** ciascuna (vedi sotto) |
 | giri CPU | 5 | 3 |
 | disco | ogni volta | **solo con `-D` o `-d DIR`**, 1 passata + 1 s di 4k random |
 | **totale** | ~50 s | **~20 s** (~25 s con il disco) |
@@ -301,7 +301,22 @@ cpu1_base_GBs, aes_GBs, vett_GBs, x86_livello, cpu_flag, schema
 - Con un giro solo il giro più veloce e il più lento coincidono, e la consistenza non si vede più.
 - Misure troppo corte fanno scattare gli allarmi a vuoto.
 
-**Storico:** nel CSV c'è la colonna `schema`: 1 per i test vecchi, 2 per quelli nuovi. Si confrontano solo test dello stesso schema e con lo stesso `-x`.
+**Storico:** nel CSV c'è la colonna `schema`. Si confrontano solo test dello stesso schema e con lo stesso `-x`.
+- **1:** i test vecchi, a 50 s.
+- **2:** default veloce, con il multi-core a 1 s. È durato pochi minuti, vedi sotto.
+- **3:** come il 2, ma con il multi-core a 3 s. È quello attuale.
+
+### Seconda revisione (1° novembre, 08:50): il multi-core a 1 s faceva falsi allarmi
+
+Due test uguali a 15 secondi di distanza, senza carico, hanno dato CPU tutti i core 12,39 → 9,56 GB/s (77 %), e quindi un allarme falso. Il motivo: con `openssl speed -multi 8 -seconds 1` l'avvio e la sincronizzazione degli 8 processi pesano quanto la misura. Per la stessa ragione anche la "scala" usciva troppo bassa.
+
+| Proposta del revisore | Fatto |
+|---|---|
+| Multi-core a 3 s anche nel default | **sì**: CPU tutti i core e "solo core" a 3 s (+4 s, default ~20 s) |
+| Allarmi solo con almeno 3 test di riferimento | **sì**: allarmi su CPU e indice spenti finché i test di riferimento sono meno di 3 (`MIN_RIF_ALLARME`). Lo steal dà l'allarme sempre, perché è un valore assoluto |
+| Soglia CPU dall'80 al 70 % | **no**: è un rattoppo, lo sconsigliava anche il revisore |
+
+Verifica dopo la correzione: tre test di fila sul server di origine danno 5,37 / 5,92 / 6,81 GB/s con nessun allarme, in circa 20,5 s ciascuno. Uno scarto del ±12 % resta: è la variabilità reale della VPS, e si riduce con `-x`.
 
 ---
 

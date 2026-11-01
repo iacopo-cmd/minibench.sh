@@ -4,8 +4,12 @@
 # Non modifica il sistema. Durata ~20 s, ~25 s con il disco (-D). -x N moltiplica tutto.
 #
 # SCHEMA 2 (dal 2026-11-01 ~08:45): default VELOCE, la precisione si sceglie con -x.
-#   Unita' base (-x 1): steal 5 s, CPU 1 core 1 s, istruzioni 1 s l'una, multi-core 1 s,
-#   solo core 1 s, 3 giri CPU, disco (solo -D/-d) 1 passata + 1 s di 4k random.
+#   Unita' base (-x 1): steal 5 s, CPU 1 core 1 s, istruzioni 1 s l'una, multi-core 3 s,
+#   solo core 3 s, 3 giri CPU, disco (solo -D/-d) 1 passata + 1 s di 4k random.
+#   Multi-core a 3 s e non 1 (revisione 08:50): con -multi 8 -seconds 1 l'avvio degli 8
+#   processi pesa quanto la misura -> 12,4 -> 9,6 GB/s fra due test uguali = falso allarme.
+#   Allarmi su CPU e indice solo con almeno 3 test di riferimento (lo steal sempre).
+#   SCHEMA 3 = schema 2 con multi-core a 3 s (la riga di schema 2 non si confronta).
 #   -x 3 ~ vecchio default (60 s), -x 10 = alta precisione (~3 min).
 #   Non tutto a 1 giro: steal su 2 s e' casuale (il provider ruba a raffiche), 1 solo
 #   giro non mostra la consistenza, e misure troppo corte fanno scattare allarmi a vuoto.
@@ -298,16 +302,16 @@ echo "SHA  ($(ha sha_ni && echo SHA-NI || echo 'software, niente SHA-NI')):  $C1
 echo "AES  ($(ha vaes vpclmulqdq && echo 'AES-NI + VAES' || { ha aes && echo AES-NI || echo 'software, niente AES-NI'; })):  $CA GB/s"
 echo "vett ($VETT):  $CV GB/s"
 
-echo; echo "== CPU tutti i core ($N processi, $((1 * X)) s) + steal sotto carico"
+echo; echo "== CPU tutti i core ($N processi, $((3 * X)) s) + steal sotto carico"
 read -r t1 s1 < <(stat_cpu)
-CN=$(openssl speed -seconds $((1 * X)) -bytes 16384 -multi $N sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+CN=$(openssl speed -seconds $((3 * X)) -bytes 16384 -multi $N sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
 read -r t2 s2 < <(stat_cpu)
 ST1=$(pct $((s2-s1)) $((t2-t1)))
 echo "CPU tutti i core:     $CN GB/s  ($N vCPU)"; echo "steal sotto carico:   $ST1 %"
 CC=""
 if [ "$TPC" -gt 1 ] && [ "$CORE" -lt "$N" ]; then
-  echo; echo "== CPU solo core reali ($CORE processi, $((1 * X)) s): quanto rende l'SMT"
-  CC=$(openssl speed -seconds $((1 * X)) -bytes 16384 -multi $CORE sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
+  echo; echo "== CPU solo core reali ($CORE processi, $((3 * X)) s): quanto rende l'SMT"
+  CC=$(openssl speed -seconds $((3 * X)) -bytes 16384 -multi $CORE sha256 2>/dev/null | awk '/^sha256/{v=$NF; sub(/k$/,"",v); printf "%.2f", v/1e6}')
   echo "CPU $CORE core:            $CC GB/s   -> con SMT ($N vCPU): $CN GB/s  ($(awk -v a="$CC" -v b="$CN" 'BEGIN{printf "%+.0f",(a>0?(b/a-1)*100:0)}') %)"
 fi
 # CPU concesse davvero: le vCPU, o meno se c'e' un limite cgroup
@@ -374,7 +378,7 @@ case $V in OK) echo "OK: host non sovraccarico (steal < 1%)";; ATTENZIONE) echo 
 python3 -I - "$LOG" "$(date -u +%F)" "$(date -u +%T)" "$(TZ=Europe/Rome date +%:::z | sed 's/^\([+-]\)0/\1/')" \
   "$V" "$C1" "$CN" "$GMIN" "$GMAX" "$DW" "$DR" "$D4" "$ST0" "$ST1" "$DUR" "$CLKSRC" "$NTP" "$DRIFT" "$LOAD" "$N" \
   "$CC" "$SCALA" "$MODELLO" "$CORE" "$TPC" "$LIMITE" "$VCPU_TOT" "$CORE_SIS" "$AFF" "$X" "$DISKFS" "$DISKDIR" \
-  "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" 2 "$NOLOG" "$SINTESI" <<'PY'
+  "$OSSL" "$PYV" "$CONT" "$CB" "$CA" "$CV" "$LIVELLO" "$FLAG" 3 "$NOLOG" "$SINTESI" <<'PY'
 import sys, os, csv
 log = sys.argv[1]
 COLS = ["giorno_utc","ora_utc","offset_ita","verdetto","indice_pct",
@@ -419,6 +423,7 @@ SOGLIA_STEAL_CARICO = 5.0   # %  steal sotto carico da allarme
 SOGLIA_STEAL_RIPOSO = 1.0   # %  steal a riposo da allarme
 SOGLIA_CPU = 80.0           # %  indice CPU (1 core o tutti) da allarme
 SOGLIA_INDICE = 85.0        # %  indice medio da allarme
+MIN_RIF_ALLARME = 3         # allarmi CPU/indice solo con almeno 3 test di riferimento (1 solo = rumore)
 allarmi = []
 righe = []
 if os.path.exists(log) and os.path.getsize(log) > 0:
@@ -455,7 +460,7 @@ else:
         a, b = prev.get(col), f(cur[col]); i = indice(a, b, modo)
         if i is None: print(f"  {nome:22s}{'n/d':>12s}"); continue
         vals.append(i); u = "IOPS" if col == "disco_4k_iops" else UNITA[modo]
-        if col in ("cpu1_GBs", "cpu_tutti_GBs") and i <= SOGLIA_CPU:
+        if col in ("cpu1_GBs", "cpu_tutti_GBs") and i <= SOGLIA_CPU and len(rif) >= MIN_RIF_ALLARME:
             allarmi.append(f"{nome.upper()} AL {i:.0f} % DELLA MEDIA ({b:.2f} GB/s INVECE DI {a:.2f})")
         dec = 0 if u == "IOPS" else 2
         print(f"  {nome:22s}{a:>7.{dec}f} {u:<4s}  {b:>7.{dec}f} {u:<4s}  {i:>7.1f} %  {esito(i)}")
@@ -471,7 +476,9 @@ else:
         d = m - 100
         verso = "SOPRA" if d > 0 else "SOTTO" if d < 0 else "PARI A"
         print(f"\n  INDICE MEDIO: {m:.1f} %  ->  {abs(d):.1f} % {verso} la media degli ultimi {len(rif)} test  ({esito(m)}, {len(vals)} valori)")
-        if m <= SOGLIA_INDICE: allarmi.append(f"INDICE MEDIO AL {m:.1f} % ({abs(d):.1f} % SOTTO LA MEDIA)")
+        if len(rif) < MIN_RIF_ALLARME:
+            print(f"  (allarmi CPU/indice spenti: solo {len(rif)} test di riferimento, ne servono {MIN_RIF_ALLARME})")
+        elif m <= SOGLIA_INDICE: allarmi.append(f"INDICE MEDIO AL {m:.1f} % ({abs(d):.1f} % SOTTO LA MEDIA)")
     else: cur["indice_pct"] = ""
 
 st0, st1 = f(cur["steal_riposo_pct"]), f(cur["steal_carico_pct"])
