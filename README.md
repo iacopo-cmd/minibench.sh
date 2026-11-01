@@ -46,13 +46,21 @@ bash minibench.sh /percorso/altro.csv
 | `-n` | non scrive nello storico (prova al volo) |
 | `-h` | aiuto |
 
-Esempio di `-t`:
+Esempio di `-t` (fatto per il telefono: un dato per riga, righe corte, virgola decimale):
 
 ```
-📊 minibench 2026-11-01 07:13:24 UTC · x2
-OK · steal 0.00/0.00 % · primo test
-CPU 1 core 1.04 · tutti (8 vCPU) 5.87 GB/s · scala 70.6 %
-disco W 0.55 · R 0.55 GB/s · 4k random 6249 IOPS [ext4]
+📊 minibench 01/11 08:21 UTC
+✅ OK, indice 97,2 %
+
+Steal: 0,00 % / 0,00 %
+CPU 1 core: 1,07 GB/s
+CPU 8 vCPU: 5,39 GB/s
+Scala: 63,0 %
+Base: 0,13 GB/s (v3)
+AES: 1,77 GB/s
+Vett: 1,39 GB/s
+Disco: non misurato
+
 ✅ nessun allarme
 ```
 

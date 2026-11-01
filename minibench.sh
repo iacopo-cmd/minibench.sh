@@ -449,6 +449,7 @@ SOGLIA_CPU = 80.0           # %  indice CPU (1 core o tutti) da allarme
 SOGLIA_INDICE = 85.0        # %  indice medio da allarme
 MIN_RIF_ALLARME = 3         # allarmi CPU/indice solo con almeno 3 test di riferimento (1 solo = rumore)
 allarmi = []
+brevi = []      # stessi allarmi, scritti corti per il telefono (-t)
 righe = []
 if os.path.exists(log) and os.path.getsize(log) > 0:
     with open(log, newline="") as fh: righe = list(csv.DictReader(fh))
@@ -487,6 +488,7 @@ else:
         vals.append(i); u = "IOPS" if col == "disco_4k_iops" else UNITA[modo]
         if col in ("cpu1_GBs", "cpu_tutti_GBs") and i <= SOGLIA_CPU and len(rif) >= MIN_RIF_ALLARME:
             allarmi.append(f"{nome.upper()} AL {i:.0f} % DELLA MEDIA ({b:.2f} GB/s INVECE DI {a:.2f})")
+            brevi.append(f"{nome}: {i:.0f} % della media")
         dec = 0 if u == "IOPS" else 2
         print(f"  {nome:22s}{a:>7.{dec}f} {u:<4s}  {b:>7.{dec}f} {u:<4s}  {i:>7.1f} %  {esito(i)}")
     righe_istr = [("base (senza estensioni)","cpu1_base_GBs"),("AES","aes_GBs"),("vettoriale","vett_GBs")]
@@ -503,12 +505,15 @@ else:
         print(f"\n  INDICE MEDIO: {m:.1f} %  ->  {abs(d):.1f} % {verso} la media degli ultimi {len(rif)} test  ({esito(m)}, {len(vals)} valori)")
         if len(rif) < MIN_RIF_ALLARME:
             print(f"  (allarmi CPU/indice spenti: solo {len(rif)} test di riferimento, ne servono {MIN_RIF_ALLARME})")
-        elif m <= SOGLIA_INDICE: allarmi.append(f"INDICE MEDIO AL {m:.1f} % ({abs(d):.1f} % SOTTO LA MEDIA)")
+        elif m <= SOGLIA_INDICE:
+            allarmi.append(f"INDICE MEDIO AL {m:.1f} % ({abs(d):.1f} % SOTTO LA MEDIA)"); brevi.append(f"indice: {m:.0f} %")
     else: cur["indice_pct"] = ""
 
 st0, st1 = f(cur["steal_riposo_pct"]), f(cur["steal_carico_pct"])
-if st1 is not None and st1 >= SOGLIA_STEAL_CARICO: allarmi.append(f"STEAL SOTTO CARICO {st1:.2f} % (SOGLIA {SOGLIA_STEAL_CARICO:.0f} %)")
-if st0 is not None and st0 >= SOGLIA_STEAL_RIPOSO: allarmi.append(f"STEAL A RIPOSO {st0:.2f} % (SOGLIA {SOGLIA_STEAL_RIPOSO:.0f} %)")
+if st1 is not None and st1 >= SOGLIA_STEAL_CARICO:
+    allarmi.append(f"STEAL SOTTO CARICO {st1:.2f} % (SOGLIA {SOGLIA_STEAL_CARICO:.0f} %)"); brevi.append(f"steal sotto carico: {st1:.1f} %")
+if st0 is not None and st0 >= SOGLIA_STEAL_RIPOSO:
+    allarmi.append(f"STEAL A RIPOSO {st0:.2f} % (SOGLIA {SOGLIA_STEAL_RIPOSO:.0f} %)"); brevi.append(f"steal a riposo: {st0:.1f} %")
 DA_CONFERMARE = allarmi and cur["x"] == "1" and cur["conferma"] != "1" and os.environ.get("MB_XSET") == "0"
 if DA_CONFERMARE:
     print("\n" + "?" * 70)
@@ -527,23 +532,37 @@ if allarmi:
     print("!!! Se non e' roba nostra: ripetere il test; se si ripete, segnalare al provider.")
     print("!" * 70)
 
-# --- riassunto breve (-t) per Telegram/WhatsApp
+# --- riassunto breve (-t) per Telegram/WhatsApp: un dato per riga, righe corte (telefono),
+# niente simboli che Telegram interpreta (*, _, `), virgola decimale all'italiana.
 if SINTESI:
+    it = lambda v: (v or "n/d").replace(".", ",")
+    g, o = cur["giorno_utc"].split("-"), cur["ora_utc"][:5]
     ind = cur.get("indice_pct") or ""
-    s = [f"📊 minibench {cur['giorno_utc']} {cur['ora_utc']} UTC" + (f" · x{cur['x']}" if cur["x"] != "1" else ""),
-         f"{cur['verdetto']} · steal {cur['steal_riposo_pct']}/{cur['steal_carico_pct']} %"
-         + (f" · indice {ind} %" if ind else " · primo test"),
-         f"CPU 1 core {cur['cpu1_GBs']} · tutti ({cur['vcpu']} vCPU) {cur['cpu_tutti_GBs']} GB/s · scala {cur['scala_pct']} %",
-         f"base {cur['cpu1_base_GBs']} · AES {cur['aes_GBs']} · vett {cur['vett_GBs']} GB/s · x86-64-{cur['x86_livello']}",
-         (f"disco W {cur['disco_scrittura_GBs'] or 'n/d'} · R {cur['disco_lettura_GBs'] or 'n/d'} GB/s · 4k random "
-          + (f"{cur['disco_4k_iops']} IOPS" if cur['disco_4k_iops'] else "n/d") + f" [{cur['disco_fs']}]"
-          if cur["disco_fs"] else "disco: non misurato (-D)")]
-    if cur["container"] != "none": s.append(f"⚠️ in container ({cur['container']}): steal = tutta la VM")
-    if cur["disco_fs"] == "tmpfs": s.append("⚠️ disco misurato in RAM (tmpfs): usa -d")
-    if allarmi and cur["conferma"] == "1": s.append("🚨 ALLARME CONFERMATO dal test lungo x3:")
-    for a in allarmi: s.append("🚨 " + a)
-    if not allarmi:
-        s.append("✅ allarme del test veloce NON confermato dal test lungo x3: era rumore" if cur["conferma"] == "1" else "✅ nessun allarme")
+    icona = {"OK": "✅", "ATTENZIONE": "⚠️", "MALE": "🔴"}.get(cur["verdetto"], "")
+    s = [f"📊 minibench {g[2]}/{g[1]} {o} UTC" + (f" (x{cur['x']})" if cur["x"] != "1" else ""),
+         f"{icona} {cur['verdetto']}" + (f", indice {it(ind)} %" if ind else ", primo test"),
+         "",
+         f"Steal: {it(cur['steal_riposo_pct'])} % / {it(cur['steal_carico_pct'])} %",
+         f"CPU 1 core: {it(cur['cpu1_GBs'])} GB/s",
+         f"CPU {cur['vcpu']} vCPU: {it(cur['cpu_tutti_GBs'])} GB/s",
+         f"Scala: {it(cur['scala_pct'])} %",
+         f"Base: {it(cur['cpu1_base_GBs'])} GB/s ({cur['x86_livello']})",
+         f"AES: {it(cur['aes_GBs'])} GB/s",
+         f"Vett: {it(cur['vett_GBs'])} GB/s"]
+    if cur["disco_fs"]:
+        s += [f"Disco W: {it(cur['disco_scrittura_GBs'])} GB/s", f"Disco R: {it(cur['disco_lettura_GBs'])} GB/s",
+              f"Disco 4k: {cur['disco_4k_iops'] or 'n/d'} IOPS"]
+        if cur["disco_fs"] == "tmpfs": s.append("⚠️ disco in RAM (tmpfs)")
+    else: s.append("Disco: non misurato")
+    if cur["container"] != "none": s.append("⚠️ container: steal di tutta la VM")
+    s.append("")
+    if allarmi:
+        s.append("🚨 ALLARME CONFERMATO (x3)" if cur["conferma"] == "1" else "🚨 ALLARME")
+        s += ["• " + b for b in brevi]
+    elif cur["conferma"] == "1":
+        s.append("✅ allarme non confermato: era rumore")
+    else:
+        s.append("✅ nessun allarme")
     open(SINTESI, "w").write("\n".join(s) + "\n")
 
 if NOLOG:
