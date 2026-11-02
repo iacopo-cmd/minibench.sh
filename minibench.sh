@@ -4,10 +4,11 @@
 #
 # ############################################################################
 # ##  ATTENZIONE - FRENO ACCESO DI DEFAULT                                  ##
-# ##  Senza -r il test NON riparte prima di 29 MINUTI dall'ultimo: ristampa ##
+# ##  Senza -r il test NON riparte prima di 10 MINUTI dall'ultimo: ristampa ##
 # ##  l'ultimo risultato. Test nuovo subito:  minibench.sh -r 0             ##
 # ##  Spegnerlo per sempre: riga "FRENO=" piu' sotto (cerca FRENO=),        ##
-# ##  metti 0 al posto di 29. Oppure una volta:  MINIBENCH_FRENO=0          ##
+# ##  metti 0 al posto di 9. Oppure una volta:  MINIBENCH_FRENO=0           ##
+# ##  (10 minuti nominali, cronometro a 9: chi rilancia poco prima, va)     ##
 # ############################################################################
 #
 # Non modifica il sistema. Durata ~23 s, ~26 s con il disco (-D) (misurati su 8 vCPU con SMT). -x N moltiplica tutto.
@@ -46,7 +47,7 @@
 #               volta sola; il confronto con la media usa sempre lo storico principale.
 #               FILE nuovo -> creato con l'intestazione. Se FILE e' lo storico stesso
 #               (o un link a lui) viene saltato, cosi' la riga non si scrive due volte.
-#   -r MIN      FRENO (di default ACCESO, 29 min): se nello storico c'e' gia' un test
+#   -r MIN      FRENO (di default ACCESO, 10 min nominali = 9 di cronometro): se nello storico c'e' gia' un test
 #               confrontabile (stesso -x, stessa affinity, disco se chiesto) piu' giovane di
 #               MIN minuti, NON rifa' il test: stampa quello. -r 0 = test sempre.
 #               Serve sui server condivisi: se 12 agenti lo lanciano insieme, il primo fa il
@@ -203,8 +204,9 @@ aiuto(){ sed -n '/^# Uso:/,/^# Due test/p' "$0" | sed 's/^# \{0,1\}//'; }
 ORIG=("$@")
 SCELTA=""; X=1; DISKDIR=""; TG=0; NOLOG=0
 DISCO=0; XSET=0; ARCHIVIA=0; OUT=()
-# >>> FRENO: 29 = minuti minimi fra due test (sotto, si ristampa l'ultimo). 0 = SPENTO per sempre. <<<
-FRENO=${MINIBENCH_FRENO:-29}       # per una volta sola: -r 0, oppure MINIBENCH_FRENO=0 minibench.sh
+# >>> FRENO: 9 = minuti minimi fra due test (sotto, si ristampa l'ultimo). 0 = SPENTO per sempre. <<<
+# >>> Nominale 10 minuti, cronometro a 9: chi rilancia a 9 minuti e mezzo trova il test nuovo. <<<
+FRENO=${MINIBENCH_FRENO:-9}       # per una volta sola: -r 0, oppure MINIBENCH_FRENO=0 minibench.sh
 CSV_KB=${MINIBENCH_CSV_KB:-1024}    # oltre questa dimensione lo storico propone il taglio
 TIENI=${MINIBENCH_TIENI:-1000}      # righe che -A lascia nello storico
 CONFERMA=${MINIBENCH_CONFERMA:-0}   # 1 = questo e' il test lungo di conferma di un possibile allarme
