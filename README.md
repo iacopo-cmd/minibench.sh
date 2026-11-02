@@ -86,13 +86,13 @@ Disco: non misurato
 - Ogni lancio aggiunge una riga allo storico CSV (tranne con `-n`).
 - **Storico grande:** quando supera 1 MB (circa 2.500 test), ogni test **propone** di archiviare, anche nel riassunto `-t` (`📦 Storico grande … Proposta: archiviare con -A`), ma non lo fa da solo. Soglie cambiabili con `MINIBENCH_CSV_KB` e `MINIBENCH_TIENI`.
 
-### Configurabilità: pensata per darlo a terzi
+### Configurazione
 
-Lo script è stato previsto molto configurabile, perché si possa dare a terzi senza che diventi un problema o un disservizio (per esempio un freno che confonde chi fa tanti campioni, o un disco consumato da test lanciati di continuo). Si regola senza toccare la logica, su 3 livelli:
+I default sono prudenti, pensati per un server condiviso: freno fra due test acceso, disco spento. Ogni protezione però si può allentare o spegnere, così chi usa lo script in un altro contesto (tanti campioni di fila, una macchina tutta sua) non resta bloccato da limiti che lì non servono. Tutto si regola senza toccare la logica, su 3 livelli:
 
-- **dal sorgente**: i default per tutti (righe commentate in testa a `minibench.sh`);
-- **dall'ambiente**: per un servizio o un agente (`MINIBENCH_...`);
-- **dagli switch**: per un lancio solo.
+- **sorgente**: default per tutti i lanci su quella macchina (righe indicate in testa a `minibench.sh`);
+- **ambiente**: per un servizio o un agente (variabili `MINIBENCH_...`);
+- **switch**: per un lancio solo.
 
 | Cosa | Sorgente (default per tutti) | Ambiente | Switch |
 |---|---|---|---|
@@ -106,7 +106,7 @@ Lo script è stato previsto molto configurabile, perché si possa dare a terzi s
 | non scrivere nello storico | – | – | `-n` |
 | vCPU usate | – | – | `-c N` / `-c LISTA` |
 
-Chi lo installa su un server condiviso lo tiene prudente (freno acceso, disco spento); chi lo passa ad altri o fa tanti campioni di fila lo apre (freno spento). `MINIBENCH_CONFERMA` e `MINIBENCH_AFFINITY` sono interni: li usa lo script quando si rilancia da solo.
+`MINIBENCH_CONFERMA` e `MINIBENCH_AFFINITY` sono interni: li usa lo script quando si rilancia da solo.
 
 ### ⚠️ Attenzione a `/tmp`: spesso è in RAM
 

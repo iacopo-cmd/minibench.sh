@@ -12,11 +12,14 @@
 # ##  (10 minuti nominali, cronometro a 9: chi rilancia poco prima, va)     ##
 # ############################################################################
 #
-# CONFIGURABILITA' (pensata per darlo a terzi senza che diventi un problema o un disservizio):
-#   quasi tutto si regola senza toccare la logica, in 3 livelli. Dal sorgente si cambiano
-#   i default per tutti; con variabili d'ambiente per un servizio/agente; con gli switch per
-#   un lancio solo. Chi lo installa su un server condiviso puo' tenerlo prudente (freno,
-#   disco spento); chi lo da a terzi o fa tanti campioni puo' aprirlo (freno spento).
+# CONFIGURAZIONE (lo script e' pensato per girare anche fuori da questa macchina):
+#   i default sono prudenti, adatti a un server condiviso: freno fra due test acceso,
+#   disco spento. Ogni protezione pero' si puo' allentare o spegnere, cosi' chi lo usa
+#   in un altro contesto (tanti campioni di fila, una macchina tutta sua) non si trova
+#   bloccato da limiti che li' non servono. Tutto si regola senza toccare la logica:
+#     - sorgente  = default per tutti i lanci su quella macchina
+#     - ambiente  = per un servizio o un agente (variabili MINIBENCH_...)
+#     - switch    = per un lancio solo
 #
 #   cosa                    sorgente (default per tutti)          ambiente               switch
 #   freno fra due test      riga FRENO= (9 = 10 min nominali)     MINIBENCH_FRENO=MIN    -r MIN
