@@ -12,6 +12,24 @@
 # ##  (10 minuti nominali, cronometro a 9: chi rilancia poco prima, va)     ##
 # ############################################################################
 #
+# CONFIGURABILITA' (pensata per darlo a terzi senza che diventi un problema o un disservizio):
+#   quasi tutto si regola senza toccare la logica, in 3 livelli. Dal sorgente si cambiano
+#   i default per tutti; con variabili d'ambiente per un servizio/agente; con gli switch per
+#   un lancio solo. Chi lo installa su un server condiviso puo' tenerlo prudente (freno,
+#   disco spento); chi lo da a terzi o fa tanti campioni puo' aprirlo (freno spento).
+#
+#   cosa                    sorgente (default per tutti)          ambiente               switch
+#   freno fra due test      riga FRENO= (9 = 10 min nominali)     MINIBENCH_FRENO=MIN    -r MIN
+#   freno spento del tutto  blocco "FRENO SPENTO DEL TUTTO"       -                      -
+#   storico: soglia taglio  riga CSV_KB= (1024 KB)                MINIBENCH_CSV_KB=KB    -
+#   storico: righe tenute   riga TIENI= (1000)                    MINIBENCH_TIENI=N      -A (archivia)
+#   durata/precisione       riga X=1                              -                      -x N
+#   disco (consuma)         spento di default                     -                      -D / -d DIR
+#   copie dello storico     -                                     -                      -o FILE (ripetibile)
+#   non scrivere storico    -                                     -                      -n
+#   vCPU usate              -                                     -                      -c N / -c LISTA
+#   (MINIBENCH_CONFERMA e MINIBENCH_AFFINITY sono interni: li usa lo script quando si rilancia da solo.)
+#
 # Non modifica il sistema. Durata ~23 s, ~26 s con il disco (-D) (misurati su 8 vCPU con SMT). -x N moltiplica tutto.
 #
 # SCHEMA 2 (dal 2026-11-01 ~08:45): default VELOCE, la precisione si sceglie con -x.

@@ -86,6 +86,28 @@ Disco: non misurato
 - Ogni lancio aggiunge una riga allo storico CSV (tranne con `-n`).
 - **Storico grande:** quando supera 1 MB (circa 2.500 test), ogni test **propone** di archiviare, anche nel riassunto `-t` (`📦 Storico grande … Proposta: archiviare con -A`), ma non lo fa da solo. Soglie cambiabili con `MINIBENCH_CSV_KB` e `MINIBENCH_TIENI`.
 
+### Configurabilità: pensata per darlo a terzi
+
+Lo script è stato previsto molto configurabile, perché si possa dare a terzi senza che diventi un problema o un disservizio (per esempio un freno che confonde chi fa tanti campioni, o un disco consumato da test lanciati di continuo). Si regola senza toccare la logica, su 3 livelli:
+
+- **dal sorgente**: i default per tutti (righe commentate in testa a `minibench.sh`);
+- **dall'ambiente**: per un servizio o un agente (`MINIBENCH_...`);
+- **dagli switch**: per un lancio solo.
+
+| Cosa | Sorgente (default per tutti) | Ambiente | Switch |
+|---|---|---|---|
+| freno fra due test | riga `FRENO=` (9 = 10 min nominali) | `MINIBENCH_FRENO=MIN` | `-r MIN` |
+| freno spento del tutto | blocco `FRENO SPENTO DEL TUTTO` (togliere il `#`) | – | – |
+| storico: soglia per proporre il taglio | riga `CSV_KB=` (1024 KB) | `MINIBENCH_CSV_KB=KB` | – |
+| storico: righe tenute archiviando | riga `TIENI=` (1000) | `MINIBENCH_TIENI=N` | `-A` |
+| durata / precisione | riga `X=1` | – | `-x N` |
+| disco (consuma) | spento di default | – | `-D` / `-d DIR` |
+| copie dello storico | – | – | `-o FILE` (ripetibile) |
+| non scrivere nello storico | – | – | `-n` |
+| vCPU usate | – | – | `-c N` / `-c LISTA` |
+
+Chi lo installa su un server condiviso lo tiene prudente (freno acceso, disco spento); chi lo passa ad altri o fa tanti campioni di fila lo apre (freno spento). `MINIBENCH_CONFERMA` e `MINIBENCH_AFFINITY` sono interni: li usa lo script quando si rilancia da solo.
+
 ### ⚠️ Attenzione a `/tmp`: spesso è in RAM
 
 Su molti sistemi (Debian 13 compreso) `/tmp` è `tmpfs`, cioè sta **in RAM**. Un test disco fatto lì misura la RAM, non il disco. Le prime versioni dello script facevano proprio così: sul server di origine segnavano 1,0 GB/s in scrittura e 4,5 GB/s in lettura, mentre il disco vero fa **0,55 GB/s** in tutte e due.
