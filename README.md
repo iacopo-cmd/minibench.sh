@@ -15,6 +15,11 @@ Mini benchmark per VPS Linux in circa 23 secondi (26 con il disco, che di defaul
 > Spegnerlo per sempre: in `minibench.sh` cerca la riga `FRENO=${MINIBENCH_FRENO:-9}` e metti `0` al posto di `9`
 > (oppure per un lancio: `MINIBENCH_FRENO=0 minibench.sh`).
 > 10 minuti nominali, cronometro a 9: chi rilancia poco prima dei 10 trova già il test nuovo.
+>
+> **Tanti campioni di fila?** Con il freno acceso un ciclo senza `-r 0` ristampa sempre lo stesso risultato:
+> sembrano campioni nuovi ma non lo sono. Se usi lo script così (o lo passi ad altri), in `minibench.sh`
+> c'è un blocco commentato `FRENO SPENTO DEL TUTTO` (cerca `SPENTO`): togli il `#` dalle 2 righe e il freno
+> non c'è più, ogni lancio fa il test vero.
 
 ## File nel repo
 
@@ -53,7 +58,7 @@ bash minibench.sh /percorso/altro.csv
 | `-t` | stampa solo un riassunto di 5–8 righe, pronto da mandare in chat |
 | `-n` | non scrive nello storico (prova al volo) |
 | `-o FILE` | scrive la riga anche in FILE; si ripete (`-o a.csv -o b.csv`). Il test gira una volta, il confronto usa lo storico principale. Un link allo storico viene saltato |
-| `-r MIN` | **freno**, acceso di default a 10 min (cronometro a 9): se c'è già un test confrontabile più giovane di MIN minuti non rifà il test e stampa quello. `-r 0` = test sempre |
+| `-r MIN` | **freno**, acceso di default a 10 min (cronometro a 9): se c'è già un test confrontabile più giovane di MIN minuti non rifà il test e stampa quello. `-r 0` = test sempre. Per toglierlo del tutto: blocco `FRENO SPENTO DEL TUTTO` nel codice |
 | `-A` | archivia: sposta le righe vecchie dello storico in `minibench-archivio-DATA.csv.gz`, accanto allo storico, e tiene le ultime 1.000. Non fa il test e non cancella niente |
 | `-h` | aiuto |
 

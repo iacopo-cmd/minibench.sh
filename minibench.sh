@@ -8,6 +8,7 @@
 # ##  l'ultimo risultato. Test nuovo subito:  minibench.sh -r 0             ##
 # ##  Spegnerlo per sempre: riga "FRENO=" piu' sotto (cerca FRENO=),        ##
 # ##  metti 0 al posto di 9. Oppure una volta:  MINIBENCH_FRENO=0           ##
+# ##  Per chi lo da a terzi: blocco "FRENO SPENTO DEL TUTTO" (cerca SPENTO) ##
 # ##  (10 minuti nominali, cronometro a 9: chi rilancia poco prima, va)     ##
 # ############################################################################
 #
@@ -53,6 +54,9 @@
 #               Serve sui server condivisi: se 12 agenti lo lanciano insieme, il primo fa il
 #               test (gli altri aspettano il lucchetto) e gli altri 11 leggono il risultato.
 #               Valore di default cambiabile con MINIBENCH_FRENO=MIN.
+#               ATTENZIONE: chi fa tanti campioni di fila (ciclo) senza -r 0 ottiene
+#               lo stesso risultato ristampato, non campioni nuovi. Se lo dai a terzi,
+#               attiva il blocco "FRENO SPENTO DEL TUTTO" nel codice (cerca SPENTO).
 #   -A          archivia: sposta le righe vecchie dello storico in minibench-archivio-DATA.csv.gz
 #               (accanto allo storico) e tiene le ultime 1000. Non fa il test. Non cancella niente.
 #               Quando lo storico supera 1 MB (~2500 test) ogni test lo PROPONE, non lo fa da solo.
@@ -216,6 +220,14 @@ while getopts "c:x:d:o:r:DtnAh" o; do case $o in
 shift $((OPTIND-1))
 for f in "${OUT[@]}"; do d=$(dirname "$f"); [ -d "$d" ] && [ -w "$d" -o -w "$f" ] || { echo "-o $f: la cartella $d non esiste o non e' scrivibile"; exit 2; }; done
 [[ "$FRENO" =~ ^[0-9]+$ ]] || { echo "-r $FRENO: servono i minuti (0 = freno spento)"; exit 2; }
+# ############################################################################
+# ##  FRENO SPENTO DEL TUTTO (blocco INATTIVO: per attivarlo togli il "#"   ##
+# ##  dalle 2 righe sotto). Ogni lancio fa sempre il test vero, come -r 0,  ##
+# ##  e -r / MINIBENCH_FRENO vengono ignorati. Utile se lo script va a      ##
+# ##  terzi che fanno tanti campioni di fila e il freno li confonderebbe.   ##
+# ############################################################################
+# FRENO=0
+# echo "(freno spento nel codice: ogni lancio fa il test)" >&2
 [[ "$X" =~ ^[0-9]+$ ]] && (( X >= 1 && X <= 1000 )) || { echo "-x $X: serve un numero da 1 a 1000"; exit 2; }
 if [ -n "$SCELTA" ] && [ -z "${MINIBENCH_AFFINITY:-}" ]; then
   TOT=$(grep -c ^processor /proc/cpuinfo)
